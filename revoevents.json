@@ -1,14 +1,14 @@
-{
+[{
 	"title": "Christmas Party!",
     "description": "REVO is having a Christmas Party! Bring attire and a white elephant gift under $5.",
     "date": "December 20, 2017",
     "location": "WRC Education Building",
     "imageURL": "christmas.jpeg/"
-},
-{
+}],
+[{
 	"title": "REVO Band Practice",
     "description": "REVO Band Practice in the REVO room at 5:45PM",
     "date": "December 20, 2017",
     "location": "WRC Education Building",
     "imageURL": "band.jpeg/"   
-}
+}]
