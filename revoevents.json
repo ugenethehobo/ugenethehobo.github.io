@@ -1,0 +1,18 @@
+{
+  "events": [
+    {
+      "title": "Christmas Party!",
+      "description": "REVO is having a Christmas Party! Bring attire and a white elephant gift under $5.",
+      "date": "December 20, 2017",
+      "location": "WRC Education Building",
+      "imageURL": "https://hmagrp.com/wp-content/uploads/2016/12/fwb-christmas.jpg"
+    },
+    {
+      "title": "REVO Band Practice",
+      "description": "REVO Band Practice in the REVO room at 5:45PM",
+      "date": "December 20, 2017",
+      "location": "WRC Education Building",
+      "imageURL": "https://shorefire.com/images/uploads/client/TedeschiTrucksBand_BAND_Credit_Stuart_Levine_GeneralUse1.jpg"
+    }
+  ]
+}
