@@ -162,6 +162,8 @@ button:disabled { opacity: 0.45; cursor: default; }
 .action-cooling .action-icon { background: var(--cool); box-shadow: 0 0 0 4px var(--cool-soft); animation: pulse 1.6s infinite; }
 .reason { text-align: center; font-size: 13px; color: var(--muted); margin-top: 4px; min-height: 1.2em; }
 
+.thermo-line { text-align: center; font-size: 12px; color: var(--muted); margin-top: 6px; }
+.thermo-line b { color: var(--text); font-weight: 600; }
 .feedback {
   display: flex; align-items: center; justify-content: center; gap: 8px;
   min-height: 32px; margin-top: 10px; font-size: 13px; font-weight: 600;

@@ -5,6 +5,9 @@ import { effectiveProgram, isValidTimeZone, nextChange, storeTimeZone } from './
 const MODES = ['off', 'heat', 'cool', 'smart'];
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const ASSUME_MS = 90 * 1000; // trust a sent command until Amazon's state catches up
+const MODE_SETTLE_MS = 3000; // let a mode change land before sending the set point
+const VERIFY_MS = 60 * 1000; // re-send the set point once, this long after a change
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const MODE_LABEL = { off: 'Off', heat: 'Heat', cool: 'Cool', smart: 'Smart' };
 
 function logActivity(store, by, text) {
@@ -68,6 +71,7 @@ export class Engine extends EventEmitter {
       pollError: this.pollError,
       failures: this.failures,
       lastDiscovery: this.lastDiscovery,
+      verify: this.verify,
     };
   }
 
@@ -84,6 +88,7 @@ export class Engine extends EventEmitter {
       pollError: live.pollError || null,
       failures: live.failures || 0,
       lastDiscovery: live.lastDiscovery || 0,
+      verify: live.verify || null,
     });
   }
 
@@ -201,22 +206,42 @@ export class Engine extends EventEmitter {
       stale: measured.stale,
       fallback: measured.fallback && eff.program.sensors?.some((s) => s !== this.thermostatId),
     };
+    this.status.want = d.want;
     const cmds = commandsFor(d.want, thermostat, eff.program);
+    // Re-send the set point once a minute after a change: thermostats keep
+    // separate heat and cool set points, and a mode switch can bring back the
+    // old one after ours arrives (Amazon may still report ours meanwhile).
+    const v = this.verify;
+    let reasserting = false;
+    if (v && now >= v.at) {
+      this.verify = null;
+      reasserting = true;
+      if (d.want.setpoint != null && cmds.setpoint === undefined && d.want.mode === v.mode && Math.abs(d.want.setpoint - v.setpoint) < 0.5) {
+        cmds.setpoint = d.want.setpoint;
+      }
+    }
     const results = [];
     // Mode first: a set point only applies to the thermostat's current mode.
     for (const field of ['mode', 'setpoint', 'fan']) {
       if (cmds[field] === undefined) continue;
+      if (field === 'setpoint' && cmds.mode !== undefined) await sleep(MODE_SETTLE_MS);
       results.push(await this.#send(field, cmds[field]));
     }
     if (results.length) {
+      if ((cmds.mode !== undefined || cmds.setpoint !== undefined) && d.want.setpoint != null && !reasserting) {
+        this.verify = { at: Date.now() + VERIFY_MS, mode: d.want.mode, setpoint: d.want.setpoint };
+        this.#schedulePoll(VERIFY_MS);
+      }
       this.save();
       // Read back shortly so the UI can show "confirmed by thermostat".
-      this.#schedulePoll(5000);
+      this.#schedulePoll(8000);
     }
     return results;
   }
 
   async #send(field, value) {
+    // A newer command for the same setting replaces any still awaiting confirmation.
+    for (const c of this.commands) if (c.field === field && c.state === 'sent') c.state = 'superseded';
     const cmd = { id: Math.random().toString(36).slice(2), field, value, state: 'sending', at: Date.now() };
     this.commands.unshift(cmd);
     this.commands.length = Math.min(this.commands.length, 10);

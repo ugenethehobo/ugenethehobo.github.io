@@ -1,5 +1,5 @@
 // Caches the app shell so it opens instantly; live data always comes from the server.
-const CACHE = 'home-climate-v2';
+const CACHE = 'home-climate-v3';
 const SHELL = ['/', '/app.js', '/styles.css', '/manifest.webmanifest', '/icons/icon.svg', '/icons/icon-180.png'];
 
 self.addEventListener('install', (e) => {

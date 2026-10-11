@@ -91,6 +91,38 @@ export function decide({ program, measured, thermostat, runtime, settings, now }
     };
   }
 
+  // Smart mode on the thermostat's own sensor: give the thermostat the real
+  // target in Cool or Heat and let it regulate; we only decide when to switch
+  // between the two. Its display then matches the app.
+  if (onlyThermostat && program.mode === 'smart' && typeof t0 === 'number') {
+    const coolAt = target + threshold;
+    const heatAt = target - threshold;
+    let ctx = rt.context === 'cool' || rt.context === 'heat' ? rt.context : t0 > target ? 'cool' : 'heat';
+    let reason = '';
+    const want = ctx === 'heat' && t0 >= coolAt ? 'cool' : ctx === 'cool' && t0 <= heatAt ? 'heat' : null;
+    if (want) {
+      const wait = (rt.contextSince || 0) + delayMs - now;
+      if (wait > 0) {
+        reason = `Waiting ${Math.ceil(wait / MIN)} min before switching to ${want === 'cool' ? 'cooling' : 'heating'}`;
+      } else {
+        ctx = want;
+        rt.contextSince = now;
+        reason = want === 'cool' ? `${fmt(t0)}° reached ${fmt(coolAt)}°, switched to cooling` : `${fmt(t0)}° fell to ${fmt(heatAt)}°, switched to heating`;
+      }
+    }
+    if (ctx !== rt.context) rt.contextSince ||= now;
+    rt.context = ctx;
+    const action = ctx === 'cool' ? (t0 > target ? 'cooling' : 'idle') : t0 < target ? 'heating' : 'idle';
+    if (action !== rt.action) Object.assign(rt, { action, since: now });
+    rt.inferred = true;
+    if (!reason) {
+      reason = ctx === 'cool'
+        ? `Cooling to ${fmt(target)}° as needed. Heat takes over at ${fmt(heatAt)}°`
+        : `Heating to ${fmt(target)}° as needed. A/C takes over at ${fmt(coolAt)}°`;
+    }
+    return { action, inferred: true, driven: false, reason, want: { mode: ctx === 'cool' ? 'COOL' : 'HEAT', setpoint: target }, runtime: rt };
+  }
+
   if (typeof m !== 'number') {
     // No readings at all: fall back to letting the thermostat hold the target.
     const mode = program.mode === 'cool' ? 'COOL' : 'HEAT';

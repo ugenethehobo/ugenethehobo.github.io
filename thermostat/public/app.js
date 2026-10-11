@@ -194,7 +194,7 @@ function checkConfirmed() {
   const cmds = S.state.commands.filter((c) => f.ids.includes(c.id));
   if (cmds.some((c) => c.state === 'failed')) {
     S.feedback = { state: 'failed', label: f.label, error: friendlyError(cmds.find((c) => c.state === 'failed').error) };
-  } else if (cmds.length && cmds.every((c) => c.state === 'confirmed')) {
+  } else if (cmds.length && cmds.every((c) => c.state === 'confirmed' || c.state === 'superseded')) {
     S.feedback = { state: 'confirmed', label: f.label };
     clearFeedbackSoon();
   }
@@ -340,6 +340,7 @@ function viewHome(p) {
           </div>`}
       <div class="action-line action-${status.action}"><span class="action-icon"></span>${esc(actionText)}</div>
       <div class="reason">${esc(reasonText(p, status, actionText))}</div>
+      ${thermostatLine(p)}
       <div class="feedback" aria-live="polite">${feedbackChip()}</div>
     </section>
     ${scheduleBanner()}
@@ -362,6 +363,23 @@ function viewHome(p) {
       ${st.sensors.map((s) => sensorCard(s, p)).join('') || '<div class="muted small">No sensors found yet.</div>'}
     </div>
     ${recentActivity()}`;
+}
+
+// What Amazon says the thermostat itself is set to, so the app and the
+// thermostat's display can be compared at a glance.
+function thermostatLine(p) {
+  const t = S.state.thermostat;
+  if (!t?.mode) return '';
+  const modeName = { HEAT: 'Heat', COOL: 'Cool', OFF: 'Off', AUTO: 'Auto', ECO: 'Eco' }[t.mode] || t.mode;
+  const sp = t.mode !== 'OFF' && typeof t.setpoint === 'number' ? ` ${fmtTarget(t.setpoint)}°` : '';
+  let note = '';
+  if (S.state.status.driven && t.mode !== 'OFF' && typeof t.setpoint === 'number' && Math.abs(t.setpoint - p.target) >= 0.5) {
+    const src = (S.state.status.used || []).length > 1 ? 'your sensors' : sensorName(S.state.status.used?.[0]);
+    note = ` · adjusted on purpose so it follows ${esc(src)}`;
+  } else if (S.state.commands.some((c) => c.state === 'sent')) {
+    note = ' · waiting for the thermostat to report back';
+  }
+  return `<div class="thermo-line">On the thermostat: <b>${esc(modeName)}${sp}</b>${note}</div>`;
 }
 
 function reasonText(p, status, actionText) {

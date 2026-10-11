@@ -49,33 +49,54 @@ test('nudges never exceed the safety band', () => {
   assert.equal(d.want.setpoint, 71);
 });
 
-test('smart mode: the example from the brief', () => {
-  const program = { mode: 'smart', target: 69, sensors: ['th'] };
-  let d = run(program, { th: 69.5 });
+test('smart mode on an air monitor: the example from the brief', () => {
+  const program = { mode: 'smart', target: 69, sensors: ['bed'] };
+  let d = run(program, { bed: 69.5, th: 70 });
   assert.equal(d.action, 'idle');
-  d = run(program, { th: 70 }, { runtime: d.runtime });
+  d = run(program, { bed: 70, th: 70 }, { runtime: d.runtime });
   assert.equal(d.action, 'cooling');
   assert.equal(d.want.mode, 'COOL');
-  d = run(program, { th: 69.4 }, { runtime: d.runtime });
+  d = run(program, { bed: 69.4, th: 70 }, { runtime: d.runtime });
   assert.equal(d.action, 'cooling'); // keeps cooling down to the set point
-  d = run(program, { th: 69 }, { runtime: d.runtime, t: now + 5 * MIN });
+  d = run(program, { bed: 69, th: 70 }, { runtime: d.runtime, t: now + 5 * MIN });
   assert.equal(d.action, 'idle');
   assert.equal(d.want.mode, 'COOL'); // stays in cool, set point high, until heat is needed
   // Temperature falls fast: heat waits out the changeover delay
-  d = run(program, { th: 68 }, { runtime: d.runtime, t: now + 8 * MIN });
+  d = run(program, { bed: 68, th: 70 }, { runtime: d.runtime, t: now + 8 * MIN });
   assert.equal(d.action, 'idle');
   assert.match(d.reason, /Waiting/);
-  d = run(program, { th: 67.9 }, { runtime: d.runtime, t: now + 16 * MIN });
+  d = run(program, { bed: 67.9, th: 70 }, { runtime: d.runtime, t: now + 16 * MIN });
   assert.equal(d.action, 'heating');
   assert.equal(d.want.mode, 'HEAT');
 });
 
-test('smart threshold is adjustable', () => {
-  const d = run({ mode: 'smart', target: 69, sensors: ['th'] }, { th: 70 }, {});
+test('smart mode on the thermostat sensor gives the thermostat the real target', () => {
+  const program = { mode: 'smart', target: 62, sensors: ['th'] };
+  // Warm house: cool to 62, and the thermostat display says Cool 62
+  let d = run(program, { th: 68 });
+  assert.deepEqual(d.want, { mode: 'COOL', setpoint: 62 });
   assert.equal(d.action, 'cooling');
+  d = run(program, { th: 62 }, { runtime: d.runtime, t: now + 30 * MIN });
+  assert.deepEqual(d.want, { mode: 'COOL', setpoint: 62 });
+  assert.equal(d.action, 'idle');
+  // Only switches to heat once it falls past the range, after the changeover wait
+  d = run(program, { th: 61.5 }, { runtime: d.runtime, t: now + 31 * MIN });
+  assert.equal(d.want.mode, 'COOL');
+  d = run(program, { th: 61 }, { runtime: d.runtime, t: now + 45 * MIN });
+  assert.deepEqual(d.want, { mode: 'HEAT', setpoint: 62 });
+  // ...and back to cool only after the wait
+  d = run(program, { th: 63 }, { runtime: d.runtime, t: now + 50 * MIN });
+  assert.equal(d.want.mode, 'HEAT');
+  assert.match(d.reason, /Waiting/);
+  d = run(program, { th: 63 }, { runtime: d.runtime, t: now + 56 * MIN });
+  assert.equal(d.want.mode, 'COOL');
+});
+
+test('smart threshold is adjustable', () => {
+  const program = { mode: 'smart', target: 69, sensors: ['bed'] };
+  assert.equal(run(program, { bed: 70, th: 70 }).action, 'cooling');
   const wide = { ...settings, smart: { threshold: 2, changeoverDelayMin: 0 } };
-  const readings = { th: { temp: 70, at: now } };
-  const program = { mode: 'smart', target: 69, sensors: ['th'] };
+  const readings = { bed: { temp: 70, at: now }, th: { temp: 70, at: now } };
   const m = measure(program, readings, 'th', wide, now);
   const d2 = decide({ program, measured: m, thermostat: { id: 'th', temp: 70 }, runtime: {}, settings: wide, now });
   assert.equal(d2.action, 'idle');

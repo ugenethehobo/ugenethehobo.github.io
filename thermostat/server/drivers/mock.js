@@ -14,6 +14,9 @@ export class MockDriver extends EventEmitter {
       'mock-aq-bedroom': { name: 'Bedroom Air Monitor', temp: 66.9, humidity: 47, bias: -1.4 },
     };
     this.device = { mode: 'HEAT', setpoint: 69, fan: 'auto' };
+    // Like real thermostats: separate heat and cool set points, and a mode
+    // change restores that mode's remembered set point a moment later.
+    this.remembered = { HEAT: 69, COOL: 67 };
     this.running = null;
     this.last = Date.now();
     this.info = { state: 'connected', message: 'Demo mode: simulated thermostat' };
@@ -89,12 +92,16 @@ export class MockDriver extends EventEmitter {
     await delay(400);
     this.#tick();
     this.device.mode = mode;
+    setTimeout(() => {
+      if (this.remembered[mode] != null) this.device.setpoint = this.remembered[mode];
+    }, 1500);
   }
 
   async setSetpoint(value) {
     await delay(400);
     this.#tick();
     this.device.setpoint = Math.round(value);
+    if (this.remembered[this.device.mode] != null) this.remembered[this.device.mode] = this.device.setpoint;
   }
 
   async setFan(value) {
