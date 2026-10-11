@@ -173,36 +173,36 @@ test('device info saved by an older version is rediscovered', () => {
   assert.equal(d.devices.size, 0);
 });
 
-test('sensor API probe finds and reads the thermostat settings', async () => {
+test('sensor API probe reads actions, capabilities and candidate settings', async () => {
   const realFetch = globalThis.fetch;
-  const T = (kind, name, ofType = null) => ({ kind, name, ofType });
-  const seen = [];
+  const asked = [];
   globalThis.fetch = async (url, init = {}) => {
     const { query: q, variables } = JSON.parse(init.body);
-    seen.push(q);
     let data;
-    if (q.includes('__schema')) data = { __schema: { queryType: { name: 'Query' }, mutationType: { name: 'Mutation' }, types: ['Query', 'Endpoint', 'EndpointSettings', 'ExternalTemperatureSensorSetting', 'EndpointSettingJsonInput'].map((name) => ({ name, kind: 'OBJECT' })) } };
-    else if (q.includes('__type(name: "Query")')) data = { __type: { fields: [{ name: 'endpoint', args: [{ name: 'id', type: T('NON_NULL', null, T('SCALAR', 'EndpointId')) }], type: T('OBJECT', 'Endpoint') }, { name: 'unrelated', args: [], type: T('SCALAR', 'String') }] } };
-    else if (q.includes('__type(name: "Endpoint")')) data = { __type: { fields: [{ name: 'settings', args: [], type: T('OBJECT', 'EndpointSettings') }] } };
-    else if (q.includes('__type(name: "EndpointSettings")')) data = { __type: { fields: [{ name: 'externalTemperatureSensors', args: [], type: T('OBJECT', 'ExternalTemperatureSensorSetting') }] } };
-    else if (q.includes('__type(name: "ExternalTemperatureSensorSetting")')) data = { __type: { fields: [{ name: 'endpointIds', args: [], type: T('LIST', null, T('SCALAR', 'String')) }] } };
-    else if (q.includes('__type(')) data = { __type: { fields: [] } };
-    else if (q.includes('endpoints { items { id endpointId')) data = { endpoints: { items: [{ id: 'amzn1.x', endpointId: 'amzn1.x', legacyAppliance: { applianceId: 'T' } }] } };
-    else if (q.includes('endpoint(id: $id)')) {
-      assert.match(q, /query\(\$id: EndpointId!\)/);
-      assert.equal(variables.id, 'amzn1.x');
-      data = { endpoint: { settings: { externalTemperatureSensors: { endpointIds: ['aqm-1'] } } } };
+    let errors;
+    if (q.includes('legacyAppliance { applianceId actions')) {
+      data = { endpoints: { items: [{ id: 'amzn1.x', legacyAppliance: { applianceId: 'T', actions: ['setTargetTemperature'], capabilities: [{ interfaceName: 'Alexa.ThermostatController.ExternalTemperatureSensor', properties: { supported: [{ name: 'mode' }] } }, { interfaceName: 'Alexa.EndpointHealth' }] } }] } };
+    } else if (q.includes('__type(name: "Feature")')) data = { __type: { fields: [{ name: 'name' }, { name: 'properties' }] } };
+    else if (q.includes('__type(name: "ErrorResponse")')) data = { __type: { fields: [{ name: 'code', type: { kind: 'SCALAR' } }, { name: 'details', type: { kind: 'OBJECT' } }] } };
+    else if (q.includes('endpointSettings')) {
+      assert.match(q, /error \{ code \}/);
+      const names = variables.input.settingNames;
+      asked.push(names);
+      if (names.length > 1) errors = [{ message: 'Unknown setting' }];
+      else data = { endpointSettings: { settings: names[0] === 'externalTemperatureSensors' ? [{ id: '1', name: names[0], __typename: 'EndpointSettingJson', jsonValue: { sensors: ['aqm-1'] } }] : [] } };
     }
-    return new Response(JSON.stringify({ data }));
+    return new Response(JSON.stringify({ data, errors }));
   };
   try {
     const d = new AlexaDriver({ saved: { refreshToken: 'r', cookie: 'csrf=1', cookieAt: Date.now() } });
     d.restore({ version: 2, devices: [{ id: 'T', entityId: 'T' }], thermostatId: 'T', fan: { supported: false, modes: [] } });
     const out = await d.probe();
     const by = Object.fromEntries(out.map((o) => [o.label, o]));
-    assert.ok(by.schema.data.picked.includes('ExternalTemperatureSensorSetting'));
-    assert.deepEqual(by['type Query'].data.fields.map((f) => f.name), ['endpoint']);
-    assert.deepEqual(by['thermostat-settings'].data, { endpoint: { settings: { externalTemperatureSensors: { endpointIds: ['aqm-1'] } } } });
+    assert.deepEqual(by['thermostat-legacy'].data.actions, ['setTargetTemperature']);
+    assert.equal(by['thermostat-legacy'].data.capabilities.length, 1);
+    assert.deepEqual(by['thermostat-legacy'].data.otherInterfaces, ['Alexa.EndpointHealth']);
+    assert.deepEqual(by['setting externalTemperatureSensors'].data.endpointSettings.settings[0].jsonValue, { sensors: ['aqm-1'] });
+    assert.equal(asked.length, 13); // one batch, then one by one
   } finally {
     globalThis.fetch = realFetch;
   }

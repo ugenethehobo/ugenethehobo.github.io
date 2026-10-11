@@ -615,9 +615,9 @@ export class AlexaDriver extends EventEmitter {
     this.scale = s.scale || this.scale;
   }
 
-  // Asks Amazon's GraphQL API how the Alexa app reads and changes the
-  // thermostat's selected temperature sensors. Only the API's layout and this
-  // thermostat's settings come back, never tokens.
+  // Looks for how the Alexa app reads and changes the thermostat's
+  // "Selected temperature sensors". Only device details and Amazon's answers
+  // come back, never tokens.
   async probe() {
     const out = [];
     const gql = async (label, query, variables) => {
@@ -632,58 +632,43 @@ export class AlexaDriver extends EventEmitter {
         return null;
       }
     };
-    const TYPE = '{ kind name ofType { kind name ofType { kind name ofType { kind name } } } }';
-    const typeInfo = (name) =>
-      gql(`type ${name}`, `{ __type(name: "${name}") { kind fields { name args { name type ${TYPE} } type ${TYPE} } inputFields { name type ${TYPE} } enumValues { name } possibleTypes { name } } }`);
-    const base = (t) => {
-      while (t && (t.kind === 'NON_NULL' || t.kind === 'LIST')) t = t.ofType;
-      return t;
-    };
-
-    const schema = await gql('schema', '{ __schema { queryType { name } mutationType { name } types { name kind } } }');
-    const types = (schema?.__schema?.types || []).map((t) => t.name).filter((n) => !n.startsWith('__'));
-    const want = /ExternalTemperature|TemperatureSensor|SensorSelection|RemoteSensor|EndpointSetting|ThermostatSetting|ThermostatSensor/i;
-    const picked = types.filter((n) => want.test(n) && !/^Airbus/.test(n)).slice(0, 30);
-    out.find((o) => o.label === 'schema').data = { typeCount: types.length, picked, thermostatTypes: types.filter((n) => /thermostat/i.test(n)) };
-
-    const query = await typeInfo(schema?.__schema?.queryType?.name || 'Query');
-    const qFields = query?.__type?.fields || [];
-    out.at(-1).data = { fields: qFields.filter((f) => /endpoint|setting|thermostat|sensor/i.test(f.name)).map((f) => ({ name: f.name, args: f.args.map((a) => a.name), type: base(f.type)?.name })) };
-
-    for (const name of ['Endpoint', 'EndpointSettingJsonInput', 'EndpointSettingStringInput', 'EndpointSettingToggleInput', 'SetGenericEndpointFeaturesInput', ...picked]) {
-      if (types.includes(name)) await typeInfo(name);
-    }
-
-    // Read the thermostat's settings, building the selection from the schema.
-    const fieldsOf = async (typeName, depth) => {
-      if (depth < 0) return '';
-      const d = (await gql(`fields ${typeName}`, `{ __type(name: "${typeName}") { fields { name args { name type { kind } } type ${TYPE} } } }`))?.__type;
-      out.pop(); // keep the output short
-      const parts = [];
-      for (const f of d?.fields || []) {
-        if (f.args?.some((a) => a.type.kind === 'NON_NULL')) continue;
-        const b = base(f.type);
-        if (b.kind === 'SCALAR' || b.kind === 'ENUM') parts.push(f.name);
-        else if (b.kind === 'OBJECT' && depth > 0) {
-          const inner = await fieldsOf(b.name, depth - 1);
-          if (inner) parts.push(`${f.name} ${inner}`);
-        } else if ((b.kind === 'UNION' || b.kind === 'INTERFACE') && depth > 0) parts.push(`${f.name} { __typename }`);
-      }
-      return parts.length ? `{ ${parts.join(' ')} }` : '';
-    };
     const dev = this.devices.get(this.thermostatId);
-    const endpoint = (await gql('thermostat-endpoint', '{ endpoints { items { id endpointId legacyAppliance { applianceId } } } }'))?.endpoints?.items?.find((i) => i.legacyAppliance?.applianceId === dev?.id);
-    out.at(-1).data = endpoint || null;
-    const endpointField = qFields.find((f) => f.name === 'endpoint');
-    const settingsField = (await gql('endpoint-fields', '{ __type(name: "Endpoint") { fields { name type ' + TYPE + ' } } }'))?.__type?.fields?.find((f) => /^settings?$/i.test(f.name));
-    out.pop();
-    if (endpoint && endpointField && settingsField) {
-      const sel = await fieldsOf(base(settingsField.type).name, 3);
-      const a = endpointField.args[0];
-      const typeStr = (t) => (t.kind === 'NON_NULL' ? `${typeStr(t.ofType)}!` : t.kind === 'LIST' ? `[${typeStr(t.ofType)}]` : t.name);
-      await gql('thermostat-settings', `query($id: ${a ? typeStr(a.type) : 'String!'}) { endpoint(${a?.name || 'id'}: $id) { ${settingsField.name} ${sel} } }`, { id: endpoint.id || endpoint.endpointId });
+    // 1. The thermostat's full legacy record: supported actions and the
+    //    capability details for the external sensor and configuration.
+    const list = await gql('thermostat-legacy', '{ endpoints { items { id legacyAppliance { applianceId actions capabilities applianceTypes } } } }');
+    const item = list?.endpoints?.items?.find((i) => i.legacyAppliance?.applianceId === dev?.id);
+    const caps = (parseMaybeJson(item?.legacyAppliance?.capabilities) || []).map(parseMaybeJson);
+    out.at(-1).data = item
+      ? {
+          endpointId: item.id,
+          actions: item.legacyAppliance.actions,
+          capabilities: caps.filter((c) => /External|Configuration|Schedule|Thermostat/.test(c.interfaceName || '')),
+          otherInterfaces: caps.map((c) => c.interfaceName).filter((n) => !/External|Configuration|Schedule|Thermostat/.test(n || '')),
+        }
+      : null;
+    if (!item) return out;
+    // 2. The newer feature model, with every property name.
+    const feat = await gql('feature-type', '{ __type(name: "Feature") { fields { name } } }');
+    out.at(-1).data = feat?.__type?.fields?.map((f) => f.name);
+    // 3. Named endpoint settings: try the likely names for the sensor choice.
+    const names = [
+      'temperatureSensors', 'externalTemperatureSensors', 'selectedTemperatureSensors', 'thermostatTemperatureSensors',
+      'remoteTemperatureSensors', 'temperatureSensorSelection', 'thermostatSensors', 'externalSensors', 'remoteSensors',
+      'sensorSelection', 'thermostatExternalTemperatureSensors', 'externalTemperatureSensorConfiguration',
+    ];
+    const errType = await gql('error-type', '{ __type(name: "ErrorResponse") { fields { name type { kind ofType { kind } } } } }');
+    const errFields = (errType?.__type?.fields || [])
+      .filter((f) => f.type.kind === 'SCALAR' || f.type.kind === 'ENUM' || (f.type.kind === 'NON_NULL' && ['SCALAR', 'ENUM'].includes(f.type.ofType?.kind)))
+      .map((f) => f.name);
+    out.at(-1).data = errType?.__type?.fields?.map((f) => f.name);
+    const SETTING = `{ id name __typename ... on EndpointSettingJson { jsonValue } ... on EndpointSettingString { stringValue } ... on EndpointSettingToggle { toggleValue }${errFields.length ? ` error { ${errFields.join(' ')} }` : ''} }`;
+    const q = `query($input: EndpointSettingsInput!) { endpointSettings(input: $input) { settings ${SETTING} } }`;
+    await gql('settings-all', q, { input: { endpointId: item.id, settingNames: names } });
+    if (out.at(-1).errors) {
+      // One bad name may sink the batch; ask one at a time instead.
+      for (const n of names) await gql(`setting ${n}`, q, { input: { endpointId: item.id, settingNames: [n] } });
     }
-    out.push({ label: 'readings', data: this.lastRaw.state?.deviceStates?.map((d) => ({ id: d.entity?.entityId, caps: (d.capabilityStates || []).map(parseMaybeJson).map((c) => `${c.namespace}.${c.name}${c.instance ? `#${c.instance}` : ''}=${JSON.stringify(c.value)}`) })) });
+    out.push({ label: 'readings', data: this.lastRaw.state?.deviceStates?.map((d) => ({ id: d.entity?.entityId, caps: (d.capabilityStates || []).map(parseMaybeJson).filter((c) => /Temperature|External/.test(`${c.namespace}${c.name}`)).map((c) => `${c.namespace}.${c.name}=${JSON.stringify(c.value)}`) })) });
     return out;
   }
 
