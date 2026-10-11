@@ -226,3 +226,8 @@ test('reads and changes the thermostat\'s selected sensors like the Alexa app', 
     globalThis.fetch = realFetch;
   }
 });
+
+test('device info saved before the thermostat counted as selectable is rediscovered', () => {
+  const d = new AlexaDriver();
+  assert.equal(d.restore({ version: 3, devices: [{ id: 'T', kind: 'thermostat' }], eligible: ['amzn1.alexa.endpoint.AQ1'] }), false);
+});

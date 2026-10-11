@@ -14,7 +14,7 @@
 import { EventEmitter } from 'node:events';
 
 const TIMEOUT_MS = 15000;
-const SNAPSHOT_VERSION = 3; // bump when saved device info changes shape or meaning
+const SNAPSHOT_VERSION = 4; // bump when saved device info changes shape or meaning
 const COOKIE_REFRESH_MS = 24 * 3600 * 1000;
 const SENSOR_READ_MS = 5 * 60 * 1000; // how often to re-read the selected sensors
 const APP_VERSION = '2.2.651540.0';

@@ -10,6 +10,10 @@ const VERIFY_MS = 60 * 1000; // re-send the set point once, this long after a ch
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const MODE_LABEL = { off: 'Off', heat: 'Heat', cool: 'Cool', smart: 'Smart' };
 
+// The thermostat's own sensor can always be chosen, even though Amazon's
+// list of eligible sensors only names the extra ones.
+const selectable = (x) => x.kind === 'thermostat' || x.eligible !== false;
+
 function logActivity(store, by, text) {
   store.activity.unshift({ at: Date.now(), by: by || 'System', text });
   store.activity.length = Math.min(store.activity.length, 100);
@@ -311,7 +315,7 @@ export class Engine extends EventEmitter {
       out.fan = p.fan;
     }
     if (p.sensors !== undefined) {
-      const known = new Set(this.devices.sensors.filter((x) => x.eligible !== false).map((x) => x.id));
+      const known = new Set(this.devices.sensors.filter(selectable).map((x) => x.id));
       const list = [...new Set(Array.isArray(p.sensors) ? p.sensors : [])].filter((id) => known.has(id) || !known.size);
       if (!list.length) throw new Error('Pick at least one sensor');
       out.sensors = list;
@@ -470,7 +474,7 @@ export class Engine extends EventEmitter {
     const s = this.store.settings;
     const list = this.devices.sensors
       .filter((x) => !s.hiddenSensors.includes(x.id))
-      .map((x) => ({ ...x, name: s.sensorNames[x.id] || x.name, originalName: x.name, ...this.readings[x.id] }));
+      .map((x) => ({ ...x, eligible: selectable(x), name: s.sensorNames[x.id] || x.name, originalName: x.name, ...this.readings[x.id] }));
     const t = this.thermostatState();
     const inUse = Array.isArray(t.sensors) && t.sensors.length
       ? t.sensors
