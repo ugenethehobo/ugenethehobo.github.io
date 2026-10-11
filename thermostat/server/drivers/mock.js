@@ -55,7 +55,8 @@ export class MockDriver extends EventEmitter {
   }
 
   #step(hours) {
-    const t = this.rooms['mock-thermostat'].temp;
+    // Like the real one with "Selected temperature sensors": regulates on the bedroom monitor.
+    const t = this.rooms['mock-aq-bedroom'].temp;
     const { mode, setpoint } = this.device;
     if (this.running === 'heat' && (mode !== 'HEAT' || t >= setpoint + 0.5)) this.running = null;
     if (this.running === 'cool' && (mode !== 'COOL' || t <= setpoint - 0.5)) this.running = null;
@@ -84,6 +85,12 @@ export class MockDriver extends EventEmitter {
       setpoint: this.device.setpoint,
       fan: this.device.fan,
       fanSupported: true,
+      sensing: 'EXTERNAL',
+      externalTemp: round1(this.rooms['mock-aq-bedroom'].temp),
+      cooler: this.running === 'cool' ? 'STAGE_1' : 'OFF',
+      heater: this.running === 'heat' ? 'STAGE_1' : 'OFF',
+      fanRunning: this.running ? 'STAGE_1' : 'OFF',
+      allowed: { heat: [40, 87], cool: [43, 90] },
     });
     return out;
   }

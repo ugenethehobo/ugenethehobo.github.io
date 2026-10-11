@@ -173,16 +173,26 @@ test('device info saved by an older version is rediscovered', () => {
   assert.equal(d.devices.size, 0);
 });
 
-test('sensor API probe collects schema and thermostat features', async () => {
+test('sensor API probe finds and reads the thermostat settings', async () => {
   const realFetch = globalThis.fetch;
+  const T = (kind, name, ofType = null) => ({ kind, name, ofType });
+  const seen = [];
   globalThis.fetch = async (url, init = {}) => {
-    const q = JSON.parse(init.body).query;
+    const { query: q, variables } = JSON.parse(init.body);
+    seen.push(q);
     let data;
-    if (q.includes('__schema')) data = { __schema: { queryType: { name: 'Query' }, mutationType: { name: 'Mutation' }, types: [{ name: 'ThermostatSensorSelection', kind: 'OBJECT' }, { name: 'Boring', kind: 'OBJECT' }] } };
-    else if (q.includes('__type(name: "Mutation")')) data = { __type: { fields: [{ name: 'setThermostatSensors', args: [{ name: 'input' }] }, { name: 'unrelated' }] } };
-    else if (q.includes('__type(name: "ThermostatSensorSelection")')) data = { __type: { kind: 'OBJECT', fields: [{ name: 'sensorIds' }] } };
-    else if (q.includes('properties')) return new Response(JSON.stringify({ errors: [{ message: "Field 'properties' is undefined" }] }));
-    else if (q.includes('features')) data = { endpoints: { items: [{ endpointId: 'e1', legacyAppliance: { applianceId: 'T' }, features: [{ name: 'temperatureSensorSelection' }] }] } };
+    if (q.includes('__schema')) data = { __schema: { queryType: { name: 'Query' }, mutationType: { name: 'Mutation' }, types: ['Query', 'Endpoint', 'EndpointSettings', 'ExternalTemperatureSensorSetting', 'EndpointSettingJsonInput'].map((name) => ({ name, kind: 'OBJECT' })) } };
+    else if (q.includes('__type(name: "Query")')) data = { __type: { fields: [{ name: 'endpoint', args: [{ name: 'id', type: T('NON_NULL', null, T('SCALAR', 'EndpointId')) }], type: T('OBJECT', 'Endpoint') }, { name: 'unrelated', args: [], type: T('SCALAR', 'String') }] } };
+    else if (q.includes('__type(name: "Endpoint")')) data = { __type: { fields: [{ name: 'settings', args: [], type: T('OBJECT', 'EndpointSettings') }] } };
+    else if (q.includes('__type(name: "EndpointSettings")')) data = { __type: { fields: [{ name: 'externalTemperatureSensors', args: [], type: T('OBJECT', 'ExternalTemperatureSensorSetting') }] } };
+    else if (q.includes('__type(name: "ExternalTemperatureSensorSetting")')) data = { __type: { fields: [{ name: 'endpointIds', args: [], type: T('LIST', null, T('SCALAR', 'String')) }] } };
+    else if (q.includes('__type(')) data = { __type: { fields: [] } };
+    else if (q.includes('endpoints { items { id endpointId')) data = { endpoints: { items: [{ id: 'amzn1.x', endpointId: 'amzn1.x', legacyAppliance: { applianceId: 'T' } }] } };
+    else if (q.includes('endpoint(id: $id)')) {
+      assert.match(q, /query\(\$id: EndpointId!\)/);
+      assert.equal(variables.id, 'amzn1.x');
+      data = { endpoint: { settings: { externalTemperatureSensors: { endpointIds: ['aqm-1'] } } } };
+    }
     return new Response(JSON.stringify({ data }));
   };
   try {
@@ -190,10 +200,9 @@ test('sensor API probe collects schema and thermostat features', async () => {
     d.restore({ version: 2, devices: [{ id: 'T', entityId: 'T' }], thermostatId: 'T', fan: { supported: false, modes: [] } });
     const out = await d.probe();
     const by = Object.fromEntries(out.map((o) => [o.label, o]));
-    assert.deepEqual(by.schema.data.matching, ['ThermostatSensorSelection']);
-    assert.deepEqual(by['mutation-args'].data.map((f) => f.name), ['setThermostatSensors']);
-    assert.deepEqual(by['features-1'].errors, ["Field 'properties' is undefined"]);
-    assert.equal(by['features-2'].data[0].features[0].name, 'temperatureSensorSelection');
+    assert.ok(by.schema.data.picked.includes('ExternalTemperatureSensorSetting'));
+    assert.deepEqual(by['type Query'].data.fields.map((f) => f.name), ['endpoint']);
+    assert.deepEqual(by['thermostat-settings'].data, { endpoint: { settings: { externalTemperatureSensors: { endpointIds: ['aqm-1'] } } } });
   } finally {
     globalThis.fetch = realFetch;
   }

@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { commandsFor, decide, measure } from './controller.js';
+import { commandsFor, decide, effectiveTemp } from './controller.js';
 import { effectiveProgram, isValidTimeZone, nextChange, storeTimeZone } from './schedule.js';
 
 const MODES = ['off', 'heat', 'cool', 'smart'];
@@ -155,7 +155,22 @@ export class Engine extends EventEmitter {
   thermostatState() {
     const r = this.readings[this.thermostatId] || {};
     const now = Date.now();
-    const t = { id: this.thermostatId, temp: r.temp, mode: r.mode, setpoint: r.setpoint, fan: r.fan, fanSupported: this.devices.fan.supported };
+    const t = {
+      id: this.thermostatId,
+      temp: r.temp,
+      mode: r.mode,
+      setpoint: r.setpoint,
+      fan: r.fan,
+      fanSupported: this.devices.fan.supported,
+      sensing: r.sensing,
+      externalTemp: r.externalTemp,
+      cooler: r.cooler,
+      heater: r.heater,
+      fanRunning: r.fanRunning,
+      allowed: r.allowed,
+      alexaSchedule: r.alexaSchedule,
+      humidity: r.humidity,
+    };
     for (const [k, a] of Object.entries(this.assumed)) if (a.until > now) t[k] = a.value;
     return t;
   }
@@ -192,19 +207,16 @@ export class Engine extends EventEmitter {
       return [];
     }
     const eff = effectiveProgram(this.store, new Date(now));
-    const measured = measure(eff.program, this.readings, this.thermostatId, this.store.settings, now);
     const thermostat = this.thermostatState();
-    const d = decide({ program: eff.program, measured, thermostat, runtime: this.store.runtime, settings: this.store.settings, now });
+    const d = decide({ program: eff.program, thermostat, runtime: this.store.runtime, settings: this.store.settings, now });
     this.store.runtime = d.runtime;
+    const eTemp = effectiveTemp(thermostat);
     this.status = {
       action: d.action,
       reason: d.reason,
-      driven: d.driven,
       inferred: !!d.inferred,
-      measured: measured.temp,
-      used: measured.used,
-      stale: measured.stale,
-      fallback: measured.fallback && eff.program.sensors?.some((s) => s !== this.thermostatId),
+      measured: eTemp.temp,
+      source: eTemp.source,
     };
     this.status.want = d.want;
     const cmds = commandsFor(d.want, thermostat, eff.program);

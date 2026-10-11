@@ -300,8 +300,8 @@ function alerts() {
   } else if (c.pollError) {
     out.push(`<div class="alert"><div><b>Can’t read the thermostat right now</b>${esc(friendlyError(c.pollError))}. Retrying automatically — your last settings are still in effect.</div></div>`);
   }
-  if (S.state.status.fallback) {
-    out.push(`<div class="alert"><div><b>Chosen sensor isn’t reporting</b>Using the thermostat’s own sensor until it’s back.</div></div>`);
+  if (S.state.thermostat?.alexaSchedule) {
+    out.push(`<div class="alert"><div><b>The Alexa app’s thermostat schedule is on</b>It can change the temperature behind this app’s back. Turn it off in the Alexa app (Devices → thermostat → Schedule) and use the Schedule tab here instead.</div></div>`);
   }
   return out.join('');
 }
@@ -315,9 +315,8 @@ function tabbar() {
 function viewHome(p) {
   const st = S.state;
   const status = st.status;
-  const used = status.used?.length ? status.used : p.sensors;
-  const sourceText = used.length > 1 ? `Average of ${used.length} sensors` : sensorName(used[0]);
-  const hum = used.length === 1 ? st.sensors.find((s) => s.id === used[0])?.humidity : null;
+  const sourceText = status.source === 'selected' ? 'Sensors selected in Alexa' : st.thermostat?.name || 'Thermostat';
+  const hum = st.thermostat?.humidity;
   const actionText = {
     heating: `Heating to ${fmtTarget(p.target)}°`,
     cooling: `Cooling to ${fmtTarget(p.target)}°`,
@@ -358,10 +357,13 @@ function viewHome(p) {
       <div class="seg" data-k="fan" role="group" aria-label="Fan">
         ${st.fan.modes.map((m) => `<button data-fan="${esc(m.value)}" aria-pressed="${p.fan === m.value}" class="${S.pending.fan === m.value ? 'sending' : ''}">${esc(m.label)}</button>`).join('')}
       </div>` : ''}
-    <div class="section"><h2>Temperature from</h2><span class="hint">${p.sensors.length > 1 ? 'Averaging' : 'Tap to switch · + to combine'}</span></div>
+    <div class="section"><h2>Sensors</h2></div>
     <div class="sensors">
-      ${st.sensors.map((s) => sensorCard(s, p)).join('') || '<div class="muted small">No sensors found yet.</div>'}
+      ${st.sensors.map((s) => sensorCard(s)).join('') || '<div class="muted small">No sensors found yet.</div>'}
     </div>
+    <p class="sensor-help">${status.source === 'selected'
+      ? `The thermostat is following the sensors selected for it in the Alexa app (${fmtTemp(status.measured)}° right now).`
+      : 'The thermostat is using its own sensor.'} Choosing sensors from this app is coming in the next update.</p>
     ${recentActivity()}`;
 }
 
@@ -372,13 +374,9 @@ function thermostatLine(p) {
   if (!t?.mode) return '';
   const modeName = { HEAT: 'Heat', COOL: 'Cool', OFF: 'Off', AUTO: 'Auto', ECO: 'Eco' }[t.mode] || t.mode;
   const sp = t.mode !== 'OFF' && typeof t.setpoint === 'number' ? ` ${fmtTarget(t.setpoint)}°` : '';
-  let note = '';
-  if (S.state.status.driven && t.mode !== 'OFF' && typeof t.setpoint === 'number' && Math.abs(t.setpoint - p.target) >= 0.5) {
-    const src = (S.state.status.used || []).length > 1 ? 'your sensors' : sensorName(S.state.status.used?.[0]);
-    note = ` · adjusted on purpose so it follows ${esc(src)}`;
-  } else if (S.state.commands.some((c) => c.state === 'sent')) {
-    note = ' · waiting for the thermostat to report back';
-  }
+  const on = (v) => v && v !== 'OFF';
+  let note = on(t.cooler) ? ' · A/C running' : on(t.heater) ? ' · heat running' : on(t.fanRunning) ? ' · fan running' : '';
+  if (S.state.commands.some((c) => c.state === 'sent')) note = ' · waiting for the thermostat to report back';
   return `<div class="thermo-line">On the thermostat: <b>${esc(modeName)}${sp}</b>${note}</div>`;
 }
 
@@ -393,17 +391,15 @@ function smartHint(p) {
   return `A/C turns on at ${fmtTarget(p.target + t)}°, heat at ${fmtTarget(p.target - t)}°`;
 }
 
-function sensorCard(s, p) {
-  const on = p.sensors.includes(s.id);
+function sensorCard(s) {
   const offline = s.reachable === false || typeof s.temp !== 'number';
   const kind = s.kind === 'thermostat' ? 'Thermostat' : s.kind === 'air-quality' ? 'Air monitor' : 'Sensor';
   return `
-    <button class="sensor ${offline ? 'offline' : ''}" data-sensor="${esc(s.id)}" aria-pressed="${on}" aria-label="Use ${esc(s.name)}">
-      <span class="combine" data-combine="${esc(s.id)}" role="button" aria-label="${on ? 'Remove from' : 'Add to'} average">${on ? '✓' : '+'}</span>
+    <div class="sensor ${offline ? 'offline' : ''}">
       <span class="name">${esc(s.name)}</span>
       <span class="temp">${offline ? 'Offline' : `${fmtTemp(s.temp)}°`}</span>
       <span class="meta"><span class="tag">${kind}</span>${typeof s.humidity === 'number' ? `<span>${Math.round(s.humidity)}%</span>` : ''}</span>
-    </button>`;
+    </div>`;
 }
 
 function feedbackChip() {
@@ -512,7 +508,7 @@ function viewSchedule() {
           <span class="entry-time">${esc(time12(e.time))}</span>
           <span class="row-main" style="flex:1">
             <div>${esc(e.name || modeLabel(e.mode))} <span class="badge">${e.mode === 'off' ? 'Off' : `${modeLabel(e.mode)} ${fmtTarget(e.target)}°`}</span></div>
-            <div class="sub">${esc(daysLabel(e.days))} · ${esc(e.sensors.map(sensorName).join(' + '))}</div>
+            <div class="sub">${esc(daysLabel(e.days))}</div>
           </span>
           <span class="right">›</span>
         </button>`).join('') : `<div class="empty">No times yet.<br>Add one, like “Night · 10:00 PM · 66° · Bedroom”.</div>`}
@@ -561,11 +557,6 @@ function renderEditor() {
         ${e.mode !== 'off' ? `<div class="settings-num"><span>Temperature</span>
           <div class="mini-step"><button data-ed-step="-1">−</button><span>${fmtTarget(e.target)}°</span><button data-ed-step="1">+</button></div></div>` : ''}
       </div>
-      <div class="group">
-        <div class="lbl">Temperature from</div>
-        <div class="chips">${st.sensors.map((s) => `<button data-ed-sensor="${esc(s.id)}" aria-pressed="${e.sensors.includes(s.id)}">${esc(s.name)}</button>`).join('')}</div>
-        ${e.sensors.length > 1 ? '<div class="small muted">Averaging the selected sensors.</div>' : ''}
-      </div>
       ${st.fan.supported ? `<div class="group"><div class="lbl">Fan</div>
         <div class="chips">${st.fan.modes.map((m) => `<button data-ed-fan="${esc(m.value)}" aria-pressed="${e.fan === m.value}">${esc(m.label)}</button>`).join('')}</div></div>` : ''}
       <div class="actions">
@@ -607,11 +598,6 @@ function viewSettings() {
     <div class="list">
       ${numRow('Switch range', `A/C turns on at set + this, heat at set − this`, 'threshold', s.smart.threshold, (v) => `±${fmtDelta(v)}`)}
       ${numRow('Changeover wait', 'Minimum gap between heating and cooling', 'changeover', s.smart.changeoverDelayMin, (v) => `${v}m`)}
-    </div>
-    <div class="section"><h2>Air-monitor control</h2></div>
-    <div class="list">
-      ${numRow('Swing', 'How far from set before Heat/Cool kicks in', 'swing', s.swing, (v) => `±${fmtDelta(v)}`)}
-      ${numRow('Safety band', 'The thermostat never goes further than this from your set temp, even if this server stops', 'maxOffset', s.maxOffset, (v) => fmtDelta(v))}
     </div>
     <div class="section"><h2>Display</h2></div>
     <div class="list"><div class="row"><div>Units</div>
