@@ -2,7 +2,7 @@
 // polling and commands are checked end to end without a real account.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { AlexaDriver, extractAuthCode } from '../server/drivers/alexa.js';
+import { AlexaDriver, extractAuthCode, fanModeLabel } from '../server/drivers/alexa.js';
 
 const cap = (namespace, name, value, instance) => JSON.stringify({ namespace, name, value, instance });
 
@@ -155,4 +155,20 @@ test('sign-in, discovery, polling and commands against a fake Amazon', async () 
   } finally {
     globalThis.fetch = realFetch;
   }
+});
+
+test('fan modes reported as numbers get their real names', () => {
+  const text = (t) => ({ '@type': 'text', value: { text: t, locale: 'en-US' } });
+  const asset = (id) => ({ '@type': 'asset', value: { assetId: id } });
+  assert.equal(fanModeLabel({ value: '1', modeResources: { friendlyNames: [text('Auto')] } }), 'Auto');
+  assert.equal(fanModeLabel({ value: '3', modeResources: { friendlyNames: [text('fan circulate')] } }), 'Circulate');
+  assert.equal(fanModeLabel({ value: '2', modeResources: { friendlyNames: [asset('Alexa.Setting.On')] } }), 'On');
+  assert.equal(fanModeLabel({ value: 'FanMode.Auto' }), 'Auto');
+  assert.equal(fanModeLabel({ value: '4' }), 'Mode 4');
+});
+
+test('device info saved by an older version is rediscovered', () => {
+  const d = new AlexaDriver();
+  assert.equal(d.restore({ devices: [{ id: 'x' }], fan: { supported: true, modes: [{ value: '1', label: '1' }] } }), false);
+  assert.equal(d.devices.size, 0);
 });

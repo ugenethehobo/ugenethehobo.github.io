@@ -73,8 +73,7 @@ export class Engine extends EventEmitter {
 
   restoreLive(live) {
     if (!live) return;
-    if (live.driver && this.driver.restore) this.driver.restore(live.driver);
-    else live.lastDiscovery = 0;
+    if (!live.driver || !this.driver.restore || this.driver.restore(live.driver) === false) live.lastDiscovery = 0;
     Object.assign(this, {
       devices: live.devices || this.devices,
       readings: live.readings || {},

@@ -14,6 +14,7 @@
 import { EventEmitter } from 'node:events';
 
 const TIMEOUT_MS = 15000;
+const SNAPSHOT_VERSION = 2; // bump when saved device info changes shape or meaning
 const COOKIE_REFRESH_MS = 24 * 3600 * 1000;
 const APP_VERSION = '2.2.651540.0';
 const API_USER_AGENT = 'AmazonWebView/Amazon Alexa/2.2.651540.0/iOS/18.3.1/iPhone';
@@ -86,9 +87,20 @@ function friendlyNames(cap) {
   return (res.friendlyNames || []).map((n) => n.value?.text || n.value?.assetId || n.friendlyName || '').join(' ');
 }
 
-function labelFor(value) {
-  const tail = String(value).split('.').pop();
-  return tail.charAt(0).toUpperCase() + tail.slice(1).toLowerCase();
+const titleCase = (t) => t.charAt(0).toUpperCase() + t.slice(1).toLowerCase();
+
+// Amazon often reports fan modes by internal value ("1", "2", "3") with the
+// human name in the mode's friendly names: plain text and/or an asset id such
+// as "Alexa.Setting.Auto".
+export function fanModeLabel(mode) {
+  const names = (mode.modeResources || mode.resources || {}).friendlyNames || [];
+  const texts = names.map((n) => n.value?.text).filter(Boolean);
+  const text = names.find((n) => /^en/i.test(n.value?.locale || '') && n.value?.text)?.value.text || texts[0];
+  if (text) return text.replace(/^fan\s+/i, '').replace(/^\w/, (c) => c.toUpperCase());
+  const asset = names.map((n) => n.value?.assetId).find(Boolean);
+  if (asset) return titleCase(asset.split('.').pop());
+  const tail = String(mode.value).split('.').pop();
+  return /^\d+$/.test(tail) ? `Mode ${tail}` : titleCase(tail);
 }
 
 // Pull the one-time code out of whatever the person pasted.
@@ -439,7 +451,7 @@ export class AlexaDriver extends EventEmitter {
           supported: true,
           kind: 'mode',
           instance: c.instance,
-          modes: c.configuration.supportedModes.map((m) => ({ value: m.value, label: labelFor(m.value) })),
+          modes: c.configuration.supportedModes.map((m) => ({ value: m.value, label: fanModeLabel(m) })),
         };
         break;
       }
@@ -552,6 +564,7 @@ export class AlexaDriver extends EventEmitter {
   // Compact device info so a restart doesn't need to rediscover.
   snapshot() {
     return {
+      version: SNAPSHOT_VERSION,
       devices: [...this.devices.values()].map(({ caps, ...d }) => d),
       fan: this.fan,
       thermostatId: this.thermostatId,
@@ -559,8 +572,10 @@ export class AlexaDriver extends EventEmitter {
     };
   }
 
+  // Returns false when the saved info is from an older version, so the
+  // caller rediscovers devices instead.
   restore(s) {
-    if (!s?.devices) return;
+    if (!s?.devices || s.version !== SNAPSHOT_VERSION) return false;
     this.devices = new Map(s.devices.map((d) => [d.id, { ...d, caps: [] }]));
     this.fan = s.fan || this.fan;
     this.thermostatId = s.thermostatId;
