@@ -453,6 +453,8 @@ export class AlexaDriver extends EventEmitter {
     try {
       const r = await this.#sh('GET', '/api/shNetworking/v1/temperatureSensor/eligibleTemperatureSensors');
       const ids = new Set(endpointIdsIn(r));
+      // Amazon lists only the extra sensors; the thermostat's own counts too.
+      for (const d of this.devices.values()) if (d.kind === 'thermostat' && d.endpointId) ids.add(d.endpointId);
       if (ids.size) this.eligible = ids;
     } catch (err) {
       this.log.warn?.('Could not read eligible temperature sensors:', err.message);

@@ -189,7 +189,8 @@ test('reads and changes the thermostat\'s selected sensors like the Alexa app', 
     }
     assert.equal(u.host, 'na-api-alexa.amazon.com');
     if (u.pathname === '/api/shNetworking/v1/temperatureSensor/eligibleTemperatureSensors') {
-      return new Response(JSON.stringify({ eligibleSensors: [{ endpointId: E('T') }, { endpointId: E('AQ1') }] }));
+      // Real format: only the extra sensors, not the thermostat itself.
+      return new Response(JSON.stringify({ supportedSensors: [{ entityId: E('AQ1'), friendlyName: 'Ava AQM', lastTemperature: { value: 20, scale: 'CELSIUS' }, connectivityStatus: 'OK' }] }));
     }
     if (u.pathname === `/api/shNetworking/v1/temperatureSensor/pairedTemperatureSensors/${encodeURIComponent(E('T'))}`) {
       if (init.method === 'PUT') {
