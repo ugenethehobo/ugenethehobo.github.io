@@ -615,61 +615,105 @@ export class AlexaDriver extends EventEmitter {
     this.scale = s.scale || this.scale;
   }
 
-  // Looks for how the Alexa app reads and changes the thermostat's
-  // "Selected temperature sensors". Only device details and Amazon's answers
-  // come back, never tokens.
+  // Searches the code of Amazon's Alexa web app for how it reads and changes
+  // a thermostat's "Selected temperature sensors". Amazon's web pages load the
+  // same API calls as the phone app, written out in their JavaScript. Only
+  // short snippets of Amazon's public code come back, never tokens.
   async probe() {
-    const out = [];
-    const gql = async (label, query, variables) => {
-      try {
-        const res = await this.#api('/nexus/v1/graphql', { method: 'POST', body: { query, variables } });
-        const item = { label, data: res?.data ?? null };
-        if (res?.errors?.length) item.errors = res.errors.map((e) => e.message);
-        out.push(item);
-        return res?.data;
-      } catch (err) {
-        out.push({ label, error: err.message });
-        return null;
+    const p = this.page;
+    const MAX_FETCHES = 40;
+    const MAX_BYTES = 8 * 1024 * 1024;
+    const KEYWORDS = [
+      'ExternalTemperatureSensor', 'externalTemperatureSensor', 'TemperatureSensors', 'temperatureSensors',
+      'SensorTargeting', 'sensorTargeting', 'AlexaSensors', 'alexaSensors', 'selectedSensors', 'SelectedSensors',
+      'RemoteSensor', 'remoteSensor', 'ThermostatSensor', 'thermostatSensor', 'sensorEndpoint', 'SensorEndpoint',
+    ];
+    let fetches = 0;
+    const pages = [];
+    const scripts = new Set();
+    const seen = new Set();
+    const hits = [];
+    const get = async (url, withCookies) => {
+      fetches++;
+      const res = await fetch(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.3 Mobile/15E148 Safari/604.1',
+          Accept: '*/*',
+          ...(withCookies ? { Cookie: this.data.cookie } : {}),
+        },
+        signal: AbortSignal.timeout(TIMEOUT_MS),
+      });
+      const len = Number(res.headers.get('content-length') || 0);
+      if (len > MAX_BYTES) {
+        await res.body?.cancel();
+        return { res, text: '' };
+      }
+      return { res, text: await res.text() };
+    };
+    const addScripts = (text, base) => {
+      const urls = new Set();
+      for (const m of text.matchAll(/<script[^>]+src=["']([^"']+)["']/g)) urls.add(m[1]);
+      for (const m of text.matchAll(/["'](https:\/\/[a-z0-9.-]*(?:amazon|media-amazon|ssl-images-amazon|cloudfront)\.[a-z.]+\/[^"'\s]+?\.js)["']/g)) urls.add(m[1]);
+      for (const u of urls) {
+        try {
+          scripts.add(new URL(u, base).href);
+        } catch {
+          // not a URL
+        }
       }
     };
-    const dev = this.devices.get(this.thermostatId);
-    // 1. The thermostat's full legacy record: supported actions and the
-    //    capability details for the external sensor and configuration.
-    const list = await gql('thermostat-legacy', '{ endpoints { items { id legacyAppliance { applianceId actions capabilities applianceTypes } } } }');
-    const item = list?.endpoints?.items?.find((i) => i.legacyAppliance?.applianceId === dev?.id);
-    const caps = (parseMaybeJson(item?.legacyAppliance?.capabilities) || []).map(parseMaybeJson);
-    out.at(-1).data = item
-      ? {
-          endpointId: item.id,
-          actions: item.legacyAppliance.actions,
-          capabilities: caps.filter((c) => /External|Configuration|Schedule|Thermostat/.test(c.interfaceName || '')),
-          otherInterfaces: caps.map((c) => c.interfaceName).filter((n) => !/External|Configuration|Schedule|Thermostat/.test(n || '')),
+    const search = (text, url) => {
+      for (const k of KEYWORDS) {
+        let i = text.indexOf(k);
+        let n = 0;
+        while (i !== -1 && n < 3 && hits.length < 40) {
+          const snippet = text.slice(Math.max(0, i - 250), i + 350);
+          const key = snippet.slice(200, 320);
+          if (!seen.has(key)) {
+            seen.add(key);
+            hits.push({ keyword: k, file: url.split('?')[0].split('/').slice(-2).join('/'), snippet });
+          }
+          i = text.indexOf(k, i + k.length);
+          n++;
         }
-      : null;
-    if (!item) return out;
-    // 2. The newer feature model, with every property name.
-    const feat = await gql('feature-type', '{ __type(name: "Feature") { fields { name } } }');
-    out.at(-1).data = feat?.__type?.fields?.map((f) => f.name);
-    // 3. Named endpoint settings: try the likely names for the sensor choice.
-    const names = [
-      'temperatureSensors', 'externalTemperatureSensors', 'selectedTemperatureSensors', 'thermostatTemperatureSensors',
-      'remoteTemperatureSensors', 'temperatureSensorSelection', 'thermostatSensors', 'externalSensors', 'remoteSensors',
-      'sensorSelection', 'thermostatExternalTemperatureSensors', 'externalTemperatureSensorConfiguration',
-    ];
-    const errType = await gql('error-type', '{ __type(name: "ErrorResponse") { fields { name type { kind ofType { kind } } } } }');
-    const errFields = (errType?.__type?.fields || [])
-      .filter((f) => f.type.kind === 'SCALAR' || f.type.kind === 'ENUM' || (f.type.kind === 'NON_NULL' && ['SCALAR', 'ENUM'].includes(f.type.ofType?.kind)))
-      .map((f) => f.name);
-    out.at(-1).data = errType?.__type?.fields?.map((f) => f.name);
-    const SETTING = `{ id name __typename ... on EndpointSettingJson { jsonValue } ... on EndpointSettingString { stringValue } ... on EndpointSettingToggle { toggleValue }${errFields.length ? ` error { ${errFields.join(' ')} }` : ''} }`;
-    const q = `query($input: EndpointSettingsInput!) { endpointSettings(input: $input) { settings ${SETTING} } }`;
-    await gql('settings-all', q, { input: { endpointId: item.id, settingNames: names } });
-    if (out.at(-1).errors) {
-      // One bad name may sink the batch; ask one at a time instead.
-      for (const n of names) await gql(`setting ${n}`, q, { input: { endpointId: item.id, settingNames: [n] } });
+      }
+    };
+    for (const url of [
+      `https://alexa.${p}/spa/index.html`,
+      `https://alexa.${p}/`,
+      `https://www.${p}/alexaquantum/sp/alexaHome`,
+      `https://www.${p}/alexa-smart-home`,
+    ]) {
+      try {
+        const { res, text } = await get(url, true);
+        pages.push({ url, status: res.status, finalUrl: res.url, title: text.match(/<title>([^<]*)/)?.[1]?.trim(), bytes: text.length });
+        if (res.ok) {
+          addScripts(text, res.url);
+          search(text, res.url);
+        }
+      } catch (err) {
+        pages.push({ url, error: err.message });
+      }
     }
-    out.push({ label: 'readings', data: this.lastRaw.state?.deviceStates?.map((d) => ({ id: d.entity?.entityId, caps: (d.capabilityStates || []).map(parseMaybeJson).filter((c) => /Temperature|External/.test(`${c.namespace}${c.name}`)).map((c) => `${c.namespace}.${c.name}=${JSON.stringify(c.value)}`) })) });
-    return out;
+    const done = new Set();
+    while (fetches < MAX_FETCHES) {
+      const next = [...scripts].find((u) => !done.has(u));
+      if (!next) break;
+      done.add(next);
+      try {
+        const { res, text } = await get(next, false);
+        if (!res.ok) continue;
+        search(text, next);
+        addScripts(text, next); // bundles that load further bundles
+      } catch {
+        // skip
+      }
+    }
+    return [
+      { label: 'pages', data: pages },
+      { label: 'scripts', data: { found: scripts.size, searched: done.size, notSearched: [...scripts].filter((u) => !done.has(u)).slice(0, 20) } },
+      { label: 'hits', data: hits },
+    ];
   }
 
   // For the device inspector page: what Amazon returned (never the tokens).

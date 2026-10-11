@@ -173,36 +173,26 @@ test('device info saved by an older version is rediscovered', () => {
   assert.equal(d.devices.size, 0);
 });
 
-test('sensor API probe reads actions, capabilities and candidate settings', async () => {
+test('probe searches the Alexa web app code for sensor selection', async () => {
   const realFetch = globalThis.fetch;
-  const asked = [];
-  globalThis.fetch = async (url, init = {}) => {
-    const { query: q, variables } = JSON.parse(init.body);
-    let data;
-    let errors;
-    if (q.includes('legacyAppliance { applianceId actions')) {
-      data = { endpoints: { items: [{ id: 'amzn1.x', legacyAppliance: { applianceId: 'T', actions: ['setTargetTemperature'], capabilities: [{ interfaceName: 'Alexa.ThermostatController.ExternalTemperatureSensor', properties: { supported: [{ name: 'mode' }] } }, { interfaceName: 'Alexa.EndpointHealth' }] } }] } };
-    } else if (q.includes('__type(name: "Feature")')) data = { __type: { fields: [{ name: 'name' }, { name: 'properties' }] } };
-    else if (q.includes('__type(name: "ErrorResponse")')) data = { __type: { fields: [{ name: 'code', type: { kind: 'SCALAR' } }, { name: 'details', type: { kind: 'OBJECT' } }] } };
-    else if (q.includes('endpointSettings')) {
-      assert.match(q, /error \{ code \}/);
-      const names = variables.input.settingNames;
-      asked.push(names);
-      if (names.length > 1) errors = [{ message: 'Unknown setting' }];
-      else data = { endpointSettings: { settings: names[0] === 'externalTemperatureSensors' ? [{ id: '1', name: names[0], __typename: 'EndpointSettingJson', jsonValue: { sensors: ['aqm-1'] } }] : [] } };
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u === 'https://alexa.amazon.com/spa/index.html') {
+      return new Response('<html><title>Amazon Alexa</title><script src="/static/main.js"></script></html>', { headers: { 'Content-Type': 'text/html' } });
     }
-    return new Response(JSON.stringify({ data, errors }));
+    if (u === 'https://alexa.amazon.com/static/main.js') return new Response('load("https://m.media-amazon.com/images/I/chunk-thermo.js")');
+    if (u === 'https://m.media-amazon.com/images/I/chunk-thermo.js') {
+      return new Response('x'.repeat(500) + 'mutation SetSensors($input:Input!){updateThermostatSensors(input:$input){selectedSensors}}' + 'y'.repeat(500));
+    }
+    return new Response('nope', { status: 404 });
   };
   try {
     const d = new AlexaDriver({ saved: { refreshToken: 'r', cookie: 'csrf=1', cookieAt: Date.now() } });
-    d.restore({ version: 2, devices: [{ id: 'T', entityId: 'T' }], thermostatId: 'T', fan: { supported: false, modes: [] } });
     const out = await d.probe();
     const by = Object.fromEntries(out.map((o) => [o.label, o]));
-    assert.deepEqual(by['thermostat-legacy'].data.actions, ['setTargetTemperature']);
-    assert.equal(by['thermostat-legacy'].data.capabilities.length, 1);
-    assert.deepEqual(by['thermostat-legacy'].data.otherInterfaces, ['Alexa.EndpointHealth']);
-    assert.deepEqual(by['setting externalTemperatureSensors'].data.endpointSettings.settings[0].jsonValue, { sensors: ['aqm-1'] });
-    assert.equal(asked.length, 13); // one batch, then one by one
+    assert.equal(by.pages.data[0].title, 'Amazon Alexa');
+    assert.equal(by.scripts.data.searched, 2);
+    assert.ok(by.hits.data.some((h) => h.keyword === 'selectedSensors' && h.snippet.includes('updateThermostatSensors') && h.file === 'I/chunk-thermo.js'));
   } finally {
     globalThis.fetch = realFetch;
   }
