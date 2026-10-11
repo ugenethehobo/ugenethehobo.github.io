@@ -686,10 +686,11 @@ export class AlexaDriver extends EventEmitter {
     ]) {
       try {
         const { res, text } = await get(url, true);
-        pages.push({ url, status: res.status, finalUrl: res.url, title: text.match(/<title>([^<]*)/)?.[1]?.trim(), bytes: text.length });
+        const finalUrl = res.url || url;
+        pages.push({ url, status: res.status, finalUrl, title: text.match(/<title>([^<]*)/)?.[1]?.trim(), bytes: text.length });
         if (res.ok) {
-          addScripts(text, res.url);
-          search(text, res.url);
+          addScripts(text, finalUrl);
+          search(text, finalUrl);
         }
       } catch (err) {
         pages.push({ url, error: err.message });
