@@ -40,7 +40,8 @@ export class Auth {
     const n = String(name || '').trim().slice(0, 24) || 'Someone';
     const payload = Buffer.from(JSON.stringify({ n, i: Date.now() })).toString('base64url');
     const flags = `Path=/; HttpOnly; SameSite=Lax; Max-Age=${YEAR}${this.secure ? '; Secure' : ''}`;
-    return { cookie: `${COOKIE}=${payload}.${this.#sign(payload)}; ${flags}`, name: n };
+    const token = `${payload}.${this.#sign(payload)}`;
+    return { cookie: `${COOKIE}=${token}; ${flags}`, name: n, token };
   }
 
   setup(passcode, name) {
@@ -70,8 +71,11 @@ export class Auth {
     return this.#session(name);
   }
 
+  // A browser sends the session cookie; the iPhone app and its widgets send
+  // the same signed token as "Authorization: Bearer <token>".
   user(req) {
-    const raw = (req.headers.get('cookie') || '').split(/;\s*/).find((c) => c.startsWith(`${COOKIE}=`));
+    const bearer = (req.headers.get('authorization') || '').match(/^Bearer\s+(\S+)$/i)?.[1];
+    const raw = bearer ? `${COOKIE}=${bearer}` : (req.headers.get('cookie') || '').split(/;\s*/).find((c) => c.startsWith(`${COOKIE}=`));
     if (!raw) return null;
     const [payload, sig] = raw.slice(COOKIE.length + 1).split('.');
     if (!payload || !sig) return null;

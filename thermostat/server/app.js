@@ -79,8 +79,9 @@ export function createApi({ engine, auth, driver }) {
     }
     if (key === 'POST /api/login') {
       const body = await readJson(request);
-      const { cookie, name } = auth.login(body.passcode, body.name, ip);
-      return json(200, { ok: true, name }, { 'Set-Cookie': cookie });
+      const { cookie, name, token } = auth.login(body.passcode, body.name, ip);
+      // Native clients keep the token themselves; browsers only get the cookie.
+      return json(200, body.client === 'native' ? { ok: true, name, token } : { ok: true, name }, { 'Set-Cookie': cookie });
     }
     if (key === 'POST /api/logout') {
       return json(200, { ok: true }, { 'Set-Cookie': auth.logoutCookie() });
@@ -89,9 +90,16 @@ export function createApi({ engine, auth, driver }) {
     const user = auth.user(request);
     if (!user) return json(401, { error: auth.needsSetup ? 'Set up the household first' : 'Sign in first', needsSetup: auth.needsSetup });
     const by = user.name;
-    const reply = async (p) => json(200, { results: await p, state: engine.snapshot() });
+    // ?view=widget returns the compact state the iPhone app and widgets use.
+    const compact = url.searchParams.get('view') === 'widget';
+    const reply = async (p) => {
+      const results = await p;
+      return json(200, compact ? { results, widget: engine.widgetState() } : { results, state: engine.snapshot() });
+    };
 
     switch (key) {
+      case 'GET /api/widget':
+        return json(200, { me: by, widget: engine.widgetState() });
       case 'GET /api/state':
         return json(200, { me: by, state: engine.snapshot() });
       case 'GET /api/events':

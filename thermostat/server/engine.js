@@ -226,9 +226,11 @@ export class Engine extends EventEmitter {
       this.status = { action: 'unknown', reason: 'No thermostat found on this Amazon account' };
       return [];
     }
+    // Adopt the Alexa sensor choice before working out the program, so the
+    // first decision already uses it.
+    this.#adoptAlexaSensors(this.thermostatState());
     const eff = effectiveProgram(this.store, new Date(now));
     const thermostat = this.thermostatState();
-    this.#adoptAlexaSensors(thermostat);
     const d = decide({ program: eff.program, thermostat, runtime: this.store.runtime, settings: this.store.settings, now });
     this.store.runtime = d.runtime;
     const eTemp = effectiveTemp(thermostat);
@@ -326,6 +328,15 @@ export class Engine extends EventEmitter {
 
   control(changes, by) {
     return this.#serial(async () => {
+      // "delta" nudges the current target (widget +/− buttons), so two quick
+      // taps from different places can't overwrite each other.
+      if (changes.delta !== undefined && changes.target === undefined) {
+        const d = Number(changes.delta);
+        if (!Number.isFinite(d) || Math.abs(d) > 10) throw new Error('Bad temperature change');
+        const current = effectiveProgram(this.store).program.target;
+        changes = { ...changes, target: this.store.settings.unit === 'C' ? current + d : Math.round(current + d) };
+      }
+      delete changes.delta;
       const clean = this.validateProgram(changes);
       if (!Object.keys(clean).length) return [];
       const now = Date.now();
@@ -469,6 +480,34 @@ export class Engine extends EventEmitter {
   }
 
   // ---- what the app sees ---------------------------------------------------
+
+  // A small summary for the iPhone app and widgets. Temperatures are °F;
+  // `unit` says how to show them.
+  widgetState() {
+    const now = Date.now();
+    const eff = effectiveProgram(this.store, new Date(now));
+    const t = this.thermostatState();
+    const c = this.driver.status();
+    return {
+      serverTime: now,
+      unit: this.store.settings.unit,
+      connection: { state: c.state, message: c.message || null, lastPollAt: this.lastPollAt || null, pollError: this.pollError },
+      measured: this.status.measured ?? null,
+      source: this.status.source || null,
+      action: this.status.action || 'unknown',
+      reason: this.status.reason || '',
+      program: { mode: eff.program.mode, target: eff.program.target, fan: eff.program.fan, sensors: eff.program.sensors || [] },
+      thermostat: { name: this.devices.thermostats.find((x) => x.id === this.thermostatId)?.name || 'Thermostat', mode: t.mode || null, setpoint: t.setpoint ?? null, humidity: t.humidity ?? null },
+      sensorControl: !!t.sensorControl,
+      sensors: this.#sensorList().map((x) => ({ id: x.id, name: x.name, kind: x.kind, temp: x.temp ?? null, inUse: !!x.inUse, eligible: x.eligible !== false, reachable: x.reachable !== false })),
+      fanModes: this.devices.fan.supported ? this.devices.fan.modes : [],
+      hold: eff.override ? { until: eff.override.until || null, by: eff.override.by || null } : null,
+      next: eff.next ? { at: eff.next.at, name: eff.next.entry.name || null, mode: eff.next.entry.mode, target: eff.next.entry.target } : null,
+      smartThreshold: this.store.settings.smart.threshold,
+      pending: this.commands.some((x) => x.state === 'sending' || x.state === 'sent'),
+      lastError: this.commands.find((x) => x.state === 'failed' && now - x.at < 5 * 60 * 1000)?.error || null,
+    };
+  }
 
   #sensorList() {
     const s = this.store.settings;
