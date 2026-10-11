@@ -173,26 +173,24 @@ test('device info saved by an older version is rediscovered', () => {
   assert.equal(d.devices.size, 0);
 });
 
-test('probe searches the Alexa web app code for sensor selection', async () => {
+test('probe reads the paired temperature sensors endpoint', async () => {
   const realFetch = globalThis.fetch;
   globalThis.fetch = async (url) => {
     const u = String(url);
-    if (u === 'https://alexa.amazon.com/spa/index.html') {
-      return new Response('<html><title>Amazon Alexa</title><script src="/static/main.js"></script></html>', { headers: { 'Content-Type': 'text/html' } });
-    }
-    if (u === 'https://alexa.amazon.com/static/main.js') return new Response('load("https://m.media-amazon.com/images/I/chunk-thermo.js")');
-    if (u === 'https://m.media-amazon.com/images/I/chunk-thermo.js') {
-      return new Response('x'.repeat(500) + 'mutation SetSensors($input:Input!){updateThermostatSensors(input:$input){selectedSensors}}' + 'y'.repeat(500));
+    if (u.endsWith('/nexus/v1/graphql')) return new Response(JSON.stringify({ data: { endpoints: { items: [{ id: 'amzn1.alexa.endpoint.T', legacyAppliance: { applianceId: 'T' } }] } } }));
+    if (u === 'https://na-api-alexa.amazon.com/api/shNetworking/v1/temperatureSensor/pairedTemperatureSensors/amzn1.alexa.endpoint.T') {
+      return new Response(JSON.stringify({ pairedSensors: ['amzn1.alexa.endpoint.AQ'] }));
     }
     return new Response('nope', { status: 404 });
   };
   try {
     const d = new AlexaDriver({ saved: { refreshToken: 'r', cookie: 'csrf=1', cookieAt: Date.now() } });
+    d.restore({ version: 2, devices: [{ id: 'T', entityId: 'T', name: 'Thermostat' }], thermostatId: 'T', fan: { supported: false, modes: [] } });
     const out = await d.probe();
-    const by = Object.fromEntries(out.map((o) => [o.label, o]));
-    assert.equal(by.pages.data[0].title, 'Amazon Alexa');
-    assert.equal(by.scripts.data.searched, 2);
-    assert.ok(by.hits.data.some((h) => h.keyword === 'selectedSensors' && h.snippet.includes('updateThermostatSensors') && h.file === 'I/chunk-thermo.js'));
+    const get = out.find((o) => o.label === 'GET na-api-alexa.amazon.com');
+    assert.equal(get.status, 200);
+    assert.match(get.body, /pairedSensors/);
+    assert.equal(out.filter((o) => o.label.startsWith('GET')).length, 1);
   } finally {
     globalThis.fetch = realFetch;
   }

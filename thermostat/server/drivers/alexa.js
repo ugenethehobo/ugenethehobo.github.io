@@ -615,106 +615,42 @@ export class AlexaDriver extends EventEmitter {
     this.scale = s.scale || this.scale;
   }
 
-  // Searches the code of Amazon's Alexa web app for how it reads and changes
-  // a thermostat's "Selected temperature sensors". Amazon's web pages load the
-  // same API calls as the phone app, written out in their JavaScript. Only
-  // short snippets of Amazon's public code come back, never tokens.
+  // Reads the thermostat's paired temperature sensors from the endpoint the
+  // Alexa app uses (found by watching the app: it PUTs here when you change
+  // "Selected temperature sensors"). Read-only; never returns tokens.
   async probe() {
-    const p = this.page;
-    const MAX_FETCHES = 40;
-    const MAX_BYTES = 8 * 1024 * 1024;
-    const KEYWORDS = [
-      'ExternalTemperatureSensor', 'externalTemperatureSensor', 'TemperatureSensors', 'temperatureSensors',
-      'SensorTargeting', 'sensorTargeting', 'AlexaSensors', 'alexaSensors', 'selectedSensors', 'SelectedSensors',
-      'RemoteSensor', 'remoteSensor', 'ThermostatSensor', 'thermostatSensor', 'sensorEndpoint', 'SensorEndpoint',
-    ];
-    let fetches = 0;
-    const pages = [];
-    const scripts = new Set();
-    const seen = new Set();
-    const hits = [];
-    const get = async (url, withCookies) => {
-      fetches++;
-      const res = await fetch(url, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.3 Mobile/15E148 Safari/604.1',
-          Accept: '*/*',
-          ...(withCookies ? { Cookie: this.data.cookie } : {}),
-        },
-        signal: AbortSignal.timeout(TIMEOUT_MS),
-      });
-      const len = Number(res.headers.get('content-length') || 0);
-      if (len > MAX_BYTES) {
-        await res.body?.cancel();
-        return { res, text: '' };
-      }
-      return { res, text: await res.text() };
-    };
-    const addScripts = (text, base) => {
-      const urls = new Set();
-      for (const m of text.matchAll(/<script[^>]+src=["']([^"']+)["']/g)) urls.add(m[1]);
-      for (const m of text.matchAll(/["'](https:\/\/[a-z0-9.-]*(?:amazon|media-amazon|ssl-images-amazon|cloudfront)\.[a-z.]+\/[^"'\s]+?\.js)["']/g)) urls.add(m[1]);
-      for (const u of urls) {
-        try {
-          scripts.add(new URL(u, base).href);
-        } catch {
-          // not a URL
-        }
-      }
-    };
-    const search = (text, url) => {
-      for (const k of KEYWORDS) {
-        let i = text.indexOf(k);
-        let n = 0;
-        while (i !== -1 && n < 3 && hits.length < 40) {
-          const snippet = text.slice(Math.max(0, i - 250), i + 350);
-          const key = snippet.slice(200, 320);
-          if (!seen.has(key)) {
-            seen.add(key);
-            hits.push({ keyword: k, file: url.split('?')[0].split('/').slice(-2).join('/'), snippet });
-          }
-          i = text.indexOf(k, i + k.length);
-          n++;
-        }
-      }
-    };
-    for (const url of [
-      `https://alexa.${p}/spa/index.html`,
-      `https://alexa.${p}/`,
-      `https://www.${p}/alexaquantum/sp/alexaHome`,
-      `https://www.${p}/alexa-smart-home`,
-    ]) {
+    const out = [];
+    const dev = this.devices.get(this.thermostatId);
+    const list = await this.#api('/nexus/v1/graphql', { method: 'POST', body: { query: '{ endpoints { items { id legacyAppliance { applianceId } } } }' } }).catch(() => null);
+    const endpointId = list?.data?.endpoints?.items?.find((i) => i.legacyAppliance?.applianceId === dev?.id)?.id;
+    out.push({ label: 'thermostat-endpoint', data: endpointId || null });
+    if (!endpointId) return out;
+    const path = `/api/shNetworking/v1/temperatureSensor/pairedTemperatureSensors/${encodeURIComponent(endpointId)}`;
+    for (const host of [`na-api-alexa.${this.page}`, this.data.apiHost || `alexa.${this.page}`]) {
       try {
-        const { res, text } = await get(url, true);
-        const finalUrl = res.url || url;
-        pages.push({ url, status: res.status, finalUrl, title: text.match(/<title>([^<]*)/)?.[1]?.trim(), bytes: text.length });
-        if (res.ok) {
-          addScripts(text, finalUrl);
-          search(text, finalUrl);
-        }
+        const jar = parseCookies(this.data.cookie);
+        const res = await fetch(`https://${host}${path}`, {
+          headers: {
+            'User-Agent': WEB_USER_AGENT,
+            Accept: 'application/json; charset=utf-8',
+            'Accept-Language': this.language,
+            Referer: `https://alexa.${this.page}/spa/index.html`,
+            Origin: `https://alexa.${this.page}`,
+            csrf: jar.csrf,
+            Cookie: this.data.cookie,
+          },
+          signal: AbortSignal.timeout(TIMEOUT_MS),
+        });
+        const text = await res.text();
+        out.push({ label: `GET ${host}`, status: res.status, body: text.slice(0, 4000) });
+        if (res.ok) break;
       } catch (err) {
-        pages.push({ url, error: err.message });
+        out.push({ label: `GET ${host}`, error: err.message });
       }
     }
-    const done = new Set();
-    while (fetches < MAX_FETCHES) {
-      const next = [...scripts].find((u) => !done.has(u));
-      if (!next) break;
-      done.add(next);
-      try {
-        const { res, text } = await get(next, false);
-        if (!res.ok) continue;
-        search(text, next);
-        addScripts(text, next); // bundles that load further bundles
-      } catch {
-        // skip
-      }
-    }
-    return [
-      { label: 'pages', data: pages },
-      { label: 'scripts', data: { found: scripts.size, searched: done.size, notSearched: [...scripts].filter((u) => !done.has(u)).slice(0, 20) } },
-      { label: 'hits', data: hits },
-    ];
+    // Sensor ids, to match against whatever the endpoint returns.
+    out.push({ label: 'sensors', data: [...this.devices.values()].map((d) => ({ name: d.name, id: d.id, entityId: d.entityId, kind: d.kind })) });
+    return out;
   }
 
   // For the device inspector page: what Amazon returned (never the tokens).
