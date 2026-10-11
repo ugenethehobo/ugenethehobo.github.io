@@ -67,3 +67,16 @@ targets:
       properties:
         com.apple.security.application-groups:
           - group.$(BUNDLE_PREFIX).homeclimate
+# One scheme for the app (which embeds the widgets), so Run always launches
+# the app rather than trying to launch the widget extension by itself.
+schemes:
+  HomeClimate:
+    build:
+      targets:
+        HomeClimate: all
+        HomeClimateWidgets: all
+    run:
+      config: Debug
+      executable: HomeClimate
+    archive:
+      config: Release

@@ -31,7 +31,7 @@ Requires iOS 18 and Xcode 16 or later.
 5. **Sign in to Xcode** with your Apple ID: Xcode → Settings → Accounts → +.
 6. **Set the team for both targets:** select the HomeClimate project in the left sidebar, then for each target (**HomeClimate** and **HomeClimateWidgets**) open **Signing & Capabilities** and choose your **Personal Team**. Leave "Automatically manage signing" on.
 7. **Prepare the iPhone:** connect it with a cable and tap **Trust**. Turn on **Settings → Privacy & Security → Developer Mode** (the phone restarts).
-8. In Xcode's toolbar, choose your iPhone as the run destination and press **▶ Run**.
+8. In Xcode's toolbar, make sure the scheme says **HomeClimate** (not HomeClimateWidgets), choose your iPhone as the run destination, and press **▶ Run**.
 9. The first time, iOS blocks the app. Go to **Settings → General → VPN & Device Management**, tap your Apple ID under Developer App, and choose **Trust**. Then open Climate.
 10. **Sign in** with your server address (e.g. `home-climate.you.workers.dev`), your name and the household passcode.
 
@@ -41,6 +41,7 @@ Then add widgets: long-press the Home Screen or Lock Screen → Edit → Add Wid
 
 ## If something goes wrong
 
+- **"Please specify the widget kind… _XCWidgetKind":** the HomeClimateWidgets scheme is selected. Switch the scheme (left of the device name in the toolbar) to **HomeClimate** and Run again.
 - **Build errors:** copy the first red error from Xcode's Issue navigator (⌘5) and send it to me.
 - **"Personal development teams do not support the App Groups capability"** (or a similar signing error): send it to me. The app and widgets share the sign-in through an App Group, and I'd switch to a different method.
 - **Widgets say "Open Climate to sign in"** even after signing in: the App Group isn't working. Same as above.
