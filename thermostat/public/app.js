@@ -296,8 +296,7 @@ function alerts() {
   const out = [];
   if (c.state === 'needs-login') {
     out.push(`<div class="alert bad"><div><b>Link your Amazon account</b>${esc(c.message)}
-      ${c.loginUrl ? `<div><a class="btn small" href="${esc(c.loginUrl)}" target="_blank" rel="noopener">Sign in to Amazon</a></div>` : ''}
-      <div class="small muted" style="margin-top:6px">Open this on a device on your home Wi-Fi. Only needed once.</div></div></div>`);
+      <div><button class="btn small" data-act="link-amazon">Link Amazon account</button></div></div></div>`);
   } else if (c.pollError) {
     out.push(`<div class="alert"><div><b>Can’t read the thermostat right now</b>${esc(friendlyError(c.pollError))}. Retrying automatically — your last settings are still in effect.</div></div>`);
   }
@@ -600,6 +599,8 @@ function viewSettings() {
     <div class="list"><div class="row"><div>Units</div>
       <div class="seg" style="box-shadow:none;background:var(--card-2);width:140px">
         <button data-unit="F" aria-pressed="${s.unit === 'F'}">°F</button><button data-unit="C" aria-pressed="${s.unit === 'C'}">°C</button></div></div></div>
+    <div class="list" style="margin-top:10px"><div class="row"><div class="row-main"><div>Time zone</div><div class="sub">Schedules follow this clock: ${esc(s.timeZone || 'not set')}</div></div>
+      ${phoneTz() && phoneTz() !== s.timeZone ? `<button class="btn small secondary" data-act="use-phone-tz">Use ${esc(phoneTz())}</button>` : ''}</div></div>
     <div class="section"><h2>Sensor names</h2></div>
     <div class="list">
       ${st.sensors.map((x) => `<div class="row"><input class="input" data-rename="${esc(x.id)}" value="${esc(x.name)}" placeholder="${esc(x.originalName)}" aria-label="Name for ${esc(x.originalName)}" maxlength="30"></div>`).join('')}
@@ -610,17 +611,20 @@ function viewSettings() {
     <div class="list">
       <div class="row"><div class="row-main"><div>${c.state === 'connected' ? 'Connected' : esc(c.message || c.state)}</div><div class="sub">Last reading ${esc(ago(c.lastPollAt))} · checks every ${s.pollSeconds}s</div></div></div>
       <button class="row" data-act="rediscover"><div>Re-scan devices</div><span class="right">${icon('refresh')}</span></button>
-      ${c.loginUrl ? `<a class="row" href="${esc(c.loginUrl)}" target="_blank" rel="noopener"><div>Sign in to Amazon again</div><span class="right">›</span></a>` : ''}
+      <button class="row" data-act="link-amazon"><div>${c.state === 'connected' ? 'Re-link Amazon account' : 'Link Amazon account'}</div><span class="right">›</span></button>
       <a class="row" href="/api/debug/devices" target="_blank" rel="noopener"><div class="row-main"><div>Device inspector</div><div class="sub">Raw data from Amazon, for troubleshooting</div></div><span class="right">›</span></a>
     </div>
     <div class="section"><h2>Household</h2></div>
     <div class="list">
       <div class="row"><div>Signed in as <b>${esc(S.me)}</b></div><button class="btn small secondary" data-act="logout">Sign out</button></div>
+      <button class="row" data-act="change-passcode"><div class="row-main"><div>Change household passcode</div><div class="sub">Signs out every phone</div></div><span class="right">›</span></button>
       <button class="row" data-act="signout-everyone"><div class="row-main"><div style="color:var(--bad)">Sign out every phone</div><div class="sub">Everyone will need the passcode again</div></div></button>
     </div>
     <div class="section"><h2>Activity</h2></div>
     <div class="list activity">${st.activity.map(activityRow).join('') || '<div class="empty">Nothing yet</div>'}</div>`;
 }
+
+const phoneTz = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
 
 const SETTING_STEPS = {
   threshold: { get: (s) => s.smart.threshold, step: 0.5, body: (v) => ({ smart: { threshold: v } }) },
@@ -641,14 +645,26 @@ async function saveSettings(body) {
 
 // ---------- login ----------
 
+let needsSetup = false;
+
 function renderLogin(error = '') {
   $app.className = 'app mode-smart';
-  $app.innerHTML = `
+  $app.innerHTML = needsSetup
+    ? `
+    <form class="login" id="login">
+      <h1>Welcome</h1>
+      <p>Choose a household passcode. Everyone in your home will use it to sign in, so share it only with them.</p>
+      <label class="field"><span>Your name</span><input class="input" name="name" autocomplete="given-name" value="${esc(localGet('name') || '')}" required></label>
+      <label class="field"><span>New household passcode (6+ characters)</span><input class="input" name="passcode" autocomplete="new-password" type="password" minlength="6" required></label>
+      <div class="error-text">${esc(error)}</div>
+      <button class="btn" type="submit">Create household</button>
+    </form>`
+    : `
     <form class="login" id="login">
       <h1>Home Climate</h1>
       <p>Enter the household passcode. Your name shows up next to the changes you make.</p>
       <label class="field"><span>Your name</span><input class="input" name="name" autocomplete="given-name" value="${esc(localGet('name') || '')}" required></label>
-      <label class="field"><span>Household passcode</span><input class="input" name="passcode" inputmode="numeric" autocomplete="current-password" type="password" required></label>
+      <label class="field"><span>Household passcode</span><input class="input" name="passcode" autocomplete="current-password" type="password" required></label>
       <div class="error-text">${esc(error)}</div>
       <button class="btn" type="submit">Sign in</button>
     </form>`;
@@ -660,10 +676,92 @@ $app.addEventListener('submit', async (ev) => {
   const fd = new FormData(ev.target);
   localSet('name', fd.get('name'));
   try {
-    await api('POST', '/api/login', { name: fd.get('name'), passcode: fd.get('passcode') });
+    await api('POST', needsSetup ? '/api/setup' : '/api/login', { name: fd.get('name'), passcode: fd.get('passcode') });
+    needsSetup = false;
     await boot();
   } catch (err) {
     renderLogin(err.message);
+  }
+});
+
+// ---------- Amazon linking ----------
+// Amazon's sign-in ends on a page whose address carries a one-time code.
+// The person copies that address and pastes it here; the server does the rest.
+
+const LINK = { url: null, error: '', busy: false };
+
+async function openLinkSheet() {
+  Object.assign(LINK, { url: null, error: '', busy: false });
+  renderLinkSheet();
+  try {
+    LINK.url = (await api('POST', '/api/amazon/start')).url;
+  } catch (err) {
+    LINK.error = err.message;
+  }
+  renderLinkSheet();
+}
+
+function renderLinkSheet() {
+  $sheet.innerHTML = `
+    <div class="sheet-backdrop" data-act="close-link"></div>
+    <div class="sheet mode-smart" role="dialog" aria-modal="true" aria-label="Link Amazon account">
+      <div class="grab"></div>
+      <header><h3>Link Amazon account</h3><button class="btn small secondary" data-act="close-link">Cancel</button></header>
+      <div class="group">
+        <div class="lbl">Step 1</div>
+        <div>Sign in on Amazon’s own page. It opens in a new tab.</div>
+        ${LINK.url
+          ? `<a class="btn" href="${esc(LINK.url)}" target="_blank" rel="noopener noreferrer">Open Amazon sign-in</a>`
+          : `<button class="btn" disabled><span class="spinner sm"></span>Preparing…</button>`}
+      </div>
+      <div class="group">
+        <div class="lbl">Step 2</div>
+        <div>After signing in, Amazon shows a page that may say <b>“Page not found”</b>. That’s expected. Copy that page’s full address: tap the address bar, then <b>Copy</b> (or Share → Copy).</div>
+      </div>
+      <div class="group">
+        <div class="lbl">Step 3</div>
+        <div>Come back to this tab and paste it here:</div>
+        <textarea class="input" id="link-url" rows="3" placeholder="https://www.amazon.com/ap/maplanding?…" autocapitalize="off" autocorrect="off" spellcheck="false"></textarea>
+        ${navigator.clipboard?.readText ? '<button class="btn secondary small" data-act="paste-link">Paste from clipboard</button>' : ''}
+        <div class="error-text">${esc(LINK.error)}</div>
+        <button class="btn" data-act="finish-link" ${LINK.busy || !LINK.url ? 'disabled' : ''}>${LINK.busy ? '<span class="spinner sm"></span>Linking…' : 'Link account'}</button>
+      </div>
+      <p class="small muted">Your Amazon password never touches this app. It only keeps the device token Amazon issues, the same way the Alexa app does on a new phone. The code in the address works once and expires within a few minutes.</p>
+    </div>`;
+}
+
+$sheet.addEventListener('click', async (ev) => {
+  const act = ev.target.closest('[data-act]')?.dataset.act;
+  if (act === 'close-link') {
+    $sheet.innerHTML = '';
+    return;
+  }
+  if (act === 'paste-link') {
+    try {
+      document.getElementById('link-url').value = await navigator.clipboard.readText();
+    } catch {
+      toast('Couldn’t read the clipboard. Long-press the box and choose Paste.');
+    }
+    return;
+  }
+  if (act === 'finish-link') {
+    const value = document.getElementById('link-url').value;
+    LINK.busy = true;
+    LINK.error = '';
+    renderLinkSheet();
+    document.getElementById('link-url').value = value;
+    try {
+      const r = await api('POST', '/api/amazon/finish', { url: value }, { timeout: 45000 });
+      S.state = r.state;
+      $sheet.innerHTML = '';
+      toast('Amazon linked. Finding your thermostat…');
+      render();
+    } catch (err) {
+      LINK.busy = false;
+      LINK.error = err.message;
+      renderLinkSheet();
+      document.getElementById('link-url').value = value;
+    }
   }
 });
 
@@ -831,6 +929,22 @@ $app.addEventListener('click', async (ev) => {
       S.me = null;
       es?.close();
       return renderLogin();
+    case 'use-phone-tz':
+      return saveSettings({ timeZone: phoneTz() });
+    case 'link-amazon':
+      return openLinkSheet();
+    case 'change-passcode': {
+      const p = prompt('New household passcode (6+ characters). Every phone will need to sign in again.');
+      if (!p) return;
+      try {
+        await api('POST', '/api/passcode', { passcode: p });
+        S.me = null;
+        es?.close();
+        return renderLogin();
+      } catch (err) {
+        return toast(err.message);
+      }
+    }
     case 'signout-everyone':
       if (!confirm('Sign out every phone in the household?')) return;
       await api('POST', '/api/signout-everyone').catch(() => {});
@@ -919,11 +1033,20 @@ document.addEventListener('keydown', (ev) => {
 
 async function boot() {
   try {
+    const hello = await api('GET', '/api/hello');
+    needsSetup = hello.needsSetup;
+    if (!hello.me) {
+      S.me = null;
+      return renderLogin();
+    }
     const r = await api('GET', '/api/state');
     S.me = r.me;
     S.state = r.state;
     render();
     connectLive();
+    // Schedules run in the household's time zone; take it from the first phone.
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (!S.state.settings.timeZone && tz) saveSettings({ timeZone: tz });
   } catch (err) {
     if (!S.me) {
       if (err.message !== 'Please sign in') {

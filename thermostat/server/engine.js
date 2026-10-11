@@ -1,19 +1,27 @@
 import { EventEmitter } from 'node:events';
 import { commandsFor, decide, measure } from './controller.js';
-import { effectiveProgram, nextChange } from './schedule.js';
-import { logActivity, saveStore } from './store.js';
+import { effectiveProgram, isValidTimeZone, nextChange, storeTimeZone } from './schedule.js';
 
 const MODES = ['off', 'heat', 'cool', 'smart'];
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const ASSUME_MS = 90 * 1000; // trust a sent command until Amazon's state catches up
 const MODE_LABEL = { off: 'Off', heat: 'Heat', cool: 'Cool', smart: 'Smart' };
 
+function logActivity(store, by, text) {
+  store.activity.unshift({ at: Date.now(), by: by || 'System', text });
+  store.activity.length = Math.min(store.activity.length, 100);
+}
+
 export class Engine extends EventEmitter {
-  constructor(driver, store, { log = console } = {}) {
+  // save(): persist `store` (and liveState() if you want fast restarts).
+  // schedule(ms): arrange for poll() to be called in `ms` milliseconds.
+  constructor(driver, store, { log = console, save = () => {}, schedule = null } = {}) {
     super();
     this.driver = driver;
     this.store = store;
     this.log = log;
+    this.saveFn = save;
+    this.scheduleFn = schedule;
     this.devices = { thermostats: [], sensors: [], fan: { supported: false, modes: [] } };
     this.readings = {};
     this.assumed = {};
@@ -31,12 +39,53 @@ export class Engine extends EventEmitter {
     return this.store.settings.thermostatId;
   }
 
-  async start() {
+  save() {
+    this.saveFn(this.store, this.liveState());
+  }
+
+  async start({ pollNow = true } = {}) {
     this.driver.on?.('status', () => this.emit('update'));
-    this.driver.on?.('reconnected', () => this.#schedulePoll(1000));
+    this.driver.on?.('reconnected', () => {
+      this.lastDiscovery = 0;
+      this.#schedulePoll(500);
+    });
     await this.driver.connect();
     this.emit('update');
-    this.#schedulePoll(0);
+    if (pollNow) this.#schedulePoll(0);
+  }
+
+  // Readings and device info, so a restart (or a Cloudflare Durable Object
+  // waking up) doesn't need to rediscover devices or wait for a poll.
+  liveState() {
+    return {
+      devices: this.devices,
+      driver: this.driver.snapshot?.(),
+      readings: this.readings,
+      assumed: this.assumed,
+      status: this.status,
+      commands: this.commands,
+      lastPollAt: this.lastPollAt,
+      pollError: this.pollError,
+      failures: this.failures,
+      lastDiscovery: this.lastDiscovery,
+    };
+  }
+
+  restoreLive(live) {
+    if (!live) return;
+    if (live.driver && this.driver.restore) this.driver.restore(live.driver);
+    else live.lastDiscovery = 0;
+    Object.assign(this, {
+      devices: live.devices || this.devices,
+      readings: live.readings || {},
+      assumed: live.assumed || {},
+      status: live.status || this.status,
+      commands: live.commands || [],
+      lastPollAt: live.lastPollAt || 0,
+      pollError: live.pollError || null,
+      failures: live.failures || 0,
+      lastDiscovery: live.lastDiscovery || 0,
+    });
   }
 
   async discover() {
@@ -52,11 +101,12 @@ export class Engine extends EventEmitter {
       this.store.base.fan = fan.modes[0].value;
     }
     this.lastDiscovery = Date.now();
-    saveStore(this.store);
+    this.save();
     return this.devices;
   }
 
   #schedulePoll(ms) {
+    if (this.scheduleFn) return this.scheduleFn(ms);
     clearTimeout(this.pollTimer);
     this.pollTimer = setTimeout(() => this.poll().catch(() => {}), ms);
   }
@@ -73,7 +123,7 @@ export class Engine extends EventEmitter {
       const base = (this.store.settings.pollSeconds || 60) * 1000;
       try {
         if (this.driver.status().state !== 'connected') {
-          this.#schedulePoll(5000);
+          this.#schedulePoll(base);
           return;
         }
         if (!this.lastDiscovery || Date.now() - this.lastDiscovery > 6 * 3600 * 1000) await this.discover();
@@ -84,11 +134,13 @@ export class Engine extends EventEmitter {
         this.failures = 0;
         this.#reconcileAssumed();
         await this.#evaluate();
+        this.save();
         this.#schedulePoll(base);
       } catch (err) {
         this.failures += 1;
         this.pollError = err.message || String(err);
         this.log.error('Poll failed:', this.pollError);
+        this.save();
         this.#schedulePoll(Math.min(base * 2 ** this.failures, 5 * 60 * 1000));
       } finally {
         this.emit('update');
@@ -124,7 +176,7 @@ export class Engine extends EventEmitter {
     if (o && o.until && o.until <= now) {
       this.store.override = null;
       logActivity(this.store, 'Schedule', 'Manual hold ended, back on schedule');
-      saveStore(this.store);
+      this.save();
     }
   }
 
@@ -158,7 +210,7 @@ export class Engine extends EventEmitter {
       results.push(await this.#send(field, cmds[field]));
     }
     if (results.length) {
-      saveStore(this.store);
+      this.save();
       // Read back shortly so the UI can show "confirmed by thermostat".
       this.#schedulePoll(5000);
     }
@@ -222,14 +274,14 @@ export class Engine extends EventEmitter {
       const { schedule } = this.store;
       const describe = this.#describe(clean);
       if (schedule.enabled && schedule.entries.length) {
-        const next = nextChange(schedule.entries, new Date(now));
+        const next = nextChange(schedule.entries, now, storeTimeZone(this.store));
         this.store.override = { ...(this.store.override || {}), ...clean, until: next ? next.at : null, by, at: now };
         logActivity(this.store, by, `${describe} (hold until next schedule change)`);
       } else {
         Object.assign(this.store.base, clean);
         logActivity(this.store, by, describe);
       }
-      saveStore(this.store);
+      this.save();
       const results = await this.#evaluate();
       this.emit('update');
       return results;
@@ -241,7 +293,7 @@ export class Engine extends EventEmitter {
       if (!this.store.override) return [];
       this.store.override = null;
       logActivity(this.store, by, 'Resumed the schedule');
-      saveStore(this.store);
+      this.save();
       const results = await this.#evaluate();
       this.emit('update');
       return results;
@@ -280,11 +332,11 @@ export class Engine extends EventEmitter {
       }
       this.store.schedule = { enabled, entries };
       if (this.store.override) {
-        const next = nextChange(entries);
+        const next = nextChange(entries, Date.now(), storeTimeZone(this.store));
         this.store.override.until = next ? next.at : null;
       }
       logActivity(this.store, by, enabled === wasEnabled ? 'Edited the schedule' : enabled ? 'Turned the schedule on' : 'Turned the schedule off');
-      saveStore(this.store);
+      this.save();
       const results = await this.#evaluate();
       this.emit('update');
       return results;
@@ -300,6 +352,14 @@ export class Engine extends EventEmitter {
         return Math.min(hi, Math.max(lo, n));
       };
       if (input.unit !== undefined) s.unit = input.unit === 'C' ? 'C' : 'F';
+      if (input.timeZone !== undefined) {
+        if (!isValidTimeZone(input.timeZone)) throw new Error('Unknown time zone');
+        s.timeZone = input.timeZone;
+        if (this.store.override?.until) {
+          const next = nextChange(this.store.schedule.entries, Date.now(), input.timeZone);
+          this.store.override.until = next ? next.at : null;
+        }
+      }
       if (input.swing !== undefined) s.swing = num(input.swing, 0.25, 3);
       if (input.maxOffset !== undefined) s.maxOffset = num(input.maxOffset, 2, 10);
       if (input.pollSeconds !== undefined) s.pollSeconds = num(input.pollSeconds, 30, 600);
@@ -313,14 +373,20 @@ export class Engine extends EventEmitter {
       }
       if (input.thermostatId !== undefined && this.devices.thermostats.some((t) => t.id === input.thermostatId)) {
         s.thermostatId = input.thermostatId;
-        this.devices.fan = this.driver.useThermostat(s.thermostatId);
+        await this.discover();
       }
       logActivity(this.store, by, 'Changed settings');
-      saveStore(this.store);
+      this.save();
       const results = await this.#evaluate();
       this.emit('update');
       return results;
     });
+  }
+
+  logEvent(by, text) {
+    logActivity(this.store, by, text);
+    this.save();
+    this.emit('update');
   }
 
   refresh() {

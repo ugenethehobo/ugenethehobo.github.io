@@ -52,3 +52,33 @@ test('schedule off uses manual settings', () => {
   assert.equal(e.program.target, 72);
   assert.equal(e.next, null);
 });
+
+test('runs on the household time zone, not the server clock', () => {
+  const tz = 'America/Chicago';
+  const night = [{ id: 'n', time: '22:00', days: [0, 1, 2, 3, 4, 5, 6] }];
+  // 2026-10-14 03:30 UTC is 22:30 on Oct 13 in Chicago (CDT, UTC-5)
+  const now = Date.UTC(2026, 9, 14, 3, 30);
+  assert.equal(activeEntry(night, now, tz).at, Date.UTC(2026, 9, 14, 3, 0));
+  assert.equal(nextChange(night, now, tz).at, Date.UTC(2026, 9, 15, 3, 0));
+});
+
+test('handles the daylight-saving change', () => {
+  const tz = 'America/Chicago';
+  const wake = [{ id: 'w', time: '06:30', days: [0, 1, 2, 3, 4, 5, 6] }];
+  // US clocks fall back on 2026-11-01. 6:30 AM is 11:30 UTC before, 12:30 UTC after.
+  assert.equal(nextChange(wake, Date.UTC(2026, 9, 31, 12, 0), tz).at, Date.UTC(2026, 10, 1, 12, 30));
+  assert.equal(nextChange(wake, Date.UTC(2026, 9, 30, 12, 0), tz).at, Date.UTC(2026, 9, 31, 11, 30));
+});
+
+test('effective program uses the stored time zone', () => {
+  const store = {
+    settings: { timeZone: 'America/Los_Angeles' },
+    base: { mode: 'off', target: 68, sensors: ['t'] },
+    schedule: { enabled: true, entries: [{ id: 'm', time: '07:00', days: [0, 1, 2, 3, 4, 5, 6], mode: 'heat', target: 70, sensors: ['t'] }, { id: 'e', time: '21:00', days: [0, 1, 2, 3, 4, 5, 6], mode: 'heat', target: 65, sensors: ['t'] }] },
+    override: null,
+  };
+  // 15:00 UTC = 8:00 AM in LA (PDT): morning entry is active
+  assert.equal(effectiveProgram(store, Date.UTC(2026, 9, 14, 15, 0)).entry.id, 'm');
+  // 05:00 UTC = 10 PM the previous evening in LA
+  assert.equal(effectiveProgram(store, Date.UTC(2026, 9, 14, 5, 0)).entry.id, 'e');
+});

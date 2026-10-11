@@ -20,7 +20,6 @@ export class MockDriver extends EventEmitter {
   }
 
   async connect() {
-    setInterval(() => this.#tick(), 1000).unref();
     return this.info;
   }
 
@@ -43,8 +42,16 @@ export class MockDriver extends EventEmitter {
 
   #tick() {
     const now = Date.now();
-    const hours = ((now - this.last) / 3600000) * this.speed;
+    let hours = ((now - this.last) / 3600000) * this.speed;
     this.last = now;
+    while (hours > 0) {
+      const dt = Math.min(hours, 0.05);
+      hours -= dt;
+      this.#step(dt);
+    }
+  }
+
+  #step(hours) {
     const t = this.rooms['mock-thermostat'].temp;
     const { mode, setpoint } = this.device;
     if (this.running === 'heat' && (mode !== 'HEAT' || t >= setpoint + 0.5)) this.running = null;
@@ -64,6 +71,7 @@ export class MockDriver extends EventEmitter {
 
   async poll() {
     await delay(150);
+    this.#tick();
     const out = {};
     for (const [id, r] of Object.entries(this.rooms)) {
       out[id] = { temp: round1(r.temp), humidity: r.humidity, reachable: true, at: Date.now() };
@@ -79,17 +87,31 @@ export class MockDriver extends EventEmitter {
 
   async setMode(mode) {
     await delay(400);
+    this.#tick();
     this.device.mode = mode;
   }
 
   async setSetpoint(value) {
     await delay(400);
+    this.#tick();
     this.device.setpoint = Math.round(value);
   }
 
   async setFan(value) {
     await delay(400);
+    this.#tick();
     this.device.fan = value;
+  }
+
+  // Lets the "Link Amazon" screen be tried in demo mode.
+  async startLogin() {
+    return 'https://www.amazon.com/ap/signin?demo=1';
+  }
+
+  async completeLogin(pasted) {
+    await delay(600);
+    if (!/authorization_code=/.test(String(pasted))) throw new Error('That doesn’t look like the Amazon page address. Copy the whole address after signing in.');
+    return this.info;
   }
 
   async raw() {

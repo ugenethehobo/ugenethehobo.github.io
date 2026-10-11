@@ -1,13 +1,11 @@
+# Optional: run on your own computer instead of Cloudflare.
 services:
   climate:
     build: .
     restart: unless-stopped
     ports:
-      - "8080:8080"   # the app
-      - "3457:3457"   # one-time Amazon sign-in page
+      - "8080:8080"
     environment:
-      HOUSEHOLD_PASSCODE: "change-me"      # what your household types to sign in
-      PROXY_HOST: "192.168.1.50"           # this computer's LAN IP (for the Amazon sign-in link)
-      TZ: "America/Chicago"                # your time zone, so schedules run on local time
+      TZ: "America/Chicago"   # your time zone, so schedules run on local time
     volumes:
       - ./data:/data

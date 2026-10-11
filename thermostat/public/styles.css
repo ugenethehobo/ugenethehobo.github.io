@@ -322,7 +322,8 @@ button:disabled { opacity: 0.45; cursor: default; }
 .muted { color: var(--muted); }
 .small { font-size: 13px; }
 a { color: var(--accent); }
-a.row { color: inherit; text-decoration: none; }
+a.row, a.btn { color: inherit; text-decoration: none; }
+a.btn { color: #fff; }
 .shake { animation: shake 0.3s; }
 @keyframes shake { 25% { transform: translateX(-4px); } 75% { transform: translateX(4px); } }
 
