@@ -77,3 +77,17 @@ test('commands are only sent when something differs', () => {
     { mode: 'OFF', fan: 'on' },
   );
 });
+
+test('works out which sensors the thermostat is following', async () => {
+  const { inferSelectedSensors } = await import('../server/controller.js');
+  // Your readings: external 64°F; monitors 17.75°C and 19.25°C; thermostat 67.1°F
+  const sensors = [
+    { id: 'aq1', temp: 63.95 },
+    { id: 'aq2', temp: 66.65 },
+    { id: 'th', temp: 67.09 },
+  ];
+  assert.deepEqual(inferSelectedSensors(64, sensors), ['aq1']);
+  assert.deepEqual(inferSelectedSensors(65, sensors), ['aq1', 'aq2']); // average 65.3
+  assert.equal(inferSelectedSensors(67, sensors), null); // aq2+th and th alone both fit
+  assert.equal(inferSelectedSensors(undefined, sensors), null);
+});

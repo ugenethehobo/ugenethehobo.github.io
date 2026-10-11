@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { commandsFor, decide, effectiveTemp } from './controller.js';
+import { commandsFor, decide, effectiveTemp, inferSelectedSensors } from './controller.js';
 import { effectiveProgram, isValidTimeZone, nextChange, storeTimeZone } from './schedule.js';
 
 const MODES = ['off', 'heat', 'cool', 'smart'];
@@ -448,6 +448,17 @@ export class Engine extends EventEmitter {
 
   // ---- what the app sees ---------------------------------------------------
 
+  #sensorList() {
+    const s = this.store.settings;
+    const list = this.devices.sensors
+      .filter((x) => !s.hiddenSensors.includes(x.id))
+      .map((x) => ({ ...x, name: s.sensorNames[x.id] || x.name, originalName: x.name, ...this.readings[x.id] }));
+    const t = this.thermostatState();
+    const inUse = t.sensing === 'EXTERNAL' ? inferSelectedSensors(t.externalTemp, list) : [t.id];
+    for (const x of list) x.inUse = !!inUse?.includes(x.id);
+    return list;
+  }
+
   snapshot() {
     const now = Date.now();
     const eff = effectiveProgram(this.store, new Date(now));
@@ -458,9 +469,7 @@ export class Engine extends EventEmitter {
       thermostat: { ...this.thermostatState(), name: this.devices.thermostats.find((t) => t.id === this.thermostatId)?.name },
       thermostats: this.devices.thermostats,
       fan: this.devices.fan,
-      sensors: this.devices.sensors
-        .filter((x) => !s.hiddenSensors.includes(x.id))
-        .map((x) => ({ ...x, name: s.sensorNames[x.id] || x.name, originalName: x.name, ...this.readings[x.id] })),
+      sensors: this.#sensorList(),
       program: eff.program,
       source: eff.source,
       entry: eff.entry,

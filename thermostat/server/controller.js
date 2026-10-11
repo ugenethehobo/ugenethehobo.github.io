@@ -102,3 +102,18 @@ export function commandsFor(want, thermostat, program, step = 1) {
   }
   return cmds;
 }
+
+// Amazon doesn't say which sensors are selected in Alexa, only their
+// average (whole degrees). Work out which combination of sensors matches it.
+// Returns the sensor ids, or null if no single combination fits.
+export function inferSelectedSensors(externalTemp, sensors) {
+  if (typeof externalTemp !== 'number') return null;
+  const list = sensors.filter((s) => typeof s.temp === 'number' && s.reachable !== false).slice(0, 10);
+  const matches = [];
+  for (let mask = 1; mask < 1 << list.length; mask++) {
+    const picked = list.filter((_, i) => mask & (1 << i));
+    const avg = picked.reduce((a, s) => a + s.temp, 0) / picked.length;
+    if (Math.abs(avg - externalTemp) <= 0.5) matches.push(picked.map((s) => s.id));
+  }
+  return matches.length === 1 ? matches[0] : null;
+}

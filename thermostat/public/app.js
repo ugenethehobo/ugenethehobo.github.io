@@ -361,9 +361,7 @@ function viewHome(p) {
     <div class="sensors">
       ${st.sensors.map((s) => sensorCard(s)).join('') || '<div class="muted small">No sensors found yet.</div>'}
     </div>
-    <p class="sensor-help">${status.source === 'selected'
-      ? `The thermostat is following the sensors selected for it in the Alexa app (${fmtTemp(status.measured)}° right now).`
-      : 'The thermostat is using its own sensor.'} Choosing sensors from this app is coming in the next update.</p>
+    <p class="sensor-help">${sensorHelp(status)}</p>
     ${recentActivity()}`;
 }
 
@@ -391,11 +389,19 @@ function smartHint(p) {
   return `A/C turns on at ${fmtTarget(p.target + t)}°, heat at ${fmtTarget(p.target - t)}°`;
 }
 
+function sensorHelp(status) {
+  const used = S.state.sensors.filter((s) => s.inUse);
+  if (status.source !== 'selected') return 'The thermostat is using its own sensor. To use an air monitor, pick it in the Alexa app: Devices → thermostat → Selected temperature sensors.';
+  const who = used.length ? `${used.map((s) => esc(s.name)).join(' + ')} (matched from the readings)` : `the sensors selected in the Alexa app`;
+  return `✓ The thermostat is following ${who}, ${fmtTemp(status.measured)}° right now. To change sensors, use the Alexa app: Devices → thermostat → Selected temperature sensors.`;
+}
+
 function sensorCard(s) {
   const offline = s.reachable === false || typeof s.temp !== 'number';
   const kind = s.kind === 'thermostat' ? 'Thermostat' : s.kind === 'air-quality' ? 'Air monitor' : 'Sensor';
   return `
-    <div class="sensor ${offline ? 'offline' : ''}">
+    <div class="sensor ${offline ? 'offline' : ''}" aria-pressed="${!!s.inUse}">
+      ${s.inUse ? '<span class="combine" aria-label="In use">✓</span>' : ''}
       <span class="name">${esc(s.name)}</span>
       <span class="temp">${offline ? 'Offline' : `${fmtTemp(s.temp)}°`}</span>
       <span class="meta"><span class="tag">${kind}</span>${typeof s.humidity === 'number' ? `<span>${Math.round(s.humidity)}%</span>` : ''}</span>
