@@ -1,0 +1,19 @@
+{
+  "name": "home-climate",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A fast, private replacement for the Alexa app's thermostat controls, with remote sensors, schedules with manual holds, and smart heat/cool changeover.",
+  "type": "module",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "demo": "DRIVER=mock HOUSEHOLD_PASSCODE=demo node server/index.js",
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "alexa-remote2": "8.1.1"
+  }
+}
