@@ -172,3 +172,29 @@ test('device info saved by an older version is rediscovered', () => {
   assert.equal(d.restore({ devices: [{ id: 'x' }], fan: { supported: true, modes: [{ value: '1', label: '1' }] } }), false);
   assert.equal(d.devices.size, 0);
 });
+
+test('sensor API probe collects schema and thermostat features', async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    const q = JSON.parse(init.body).query;
+    let data;
+    if (q.includes('__schema')) data = { __schema: { queryType: { name: 'Query' }, mutationType: { name: 'Mutation' }, types: [{ name: 'ThermostatSensorSelection', kind: 'OBJECT' }, { name: 'Boring', kind: 'OBJECT' }] } };
+    else if (q.includes('__type(name: "Mutation")')) data = { __type: { fields: [{ name: 'setThermostatSensors', args: [{ name: 'input' }] }, { name: 'unrelated' }] } };
+    else if (q.includes('__type(name: "ThermostatSensorSelection")')) data = { __type: { kind: 'OBJECT', fields: [{ name: 'sensorIds' }] } };
+    else if (q.includes('properties')) return new Response(JSON.stringify({ errors: [{ message: "Field 'properties' is undefined" }] }));
+    else if (q.includes('features')) data = { endpoints: { items: [{ endpointId: 'e1', legacyAppliance: { applianceId: 'T' }, features: [{ name: 'temperatureSensorSelection' }] }] } };
+    return new Response(JSON.stringify({ data }));
+  };
+  try {
+    const d = new AlexaDriver({ saved: { refreshToken: 'r', cookie: 'csrf=1', cookieAt: Date.now() } });
+    d.restore({ version: 2, devices: [{ id: 'T', entityId: 'T' }], thermostatId: 'T', fan: { supported: false, modes: [] } });
+    const out = await d.probe();
+    const by = Object.fromEntries(out.map((o) => [o.label, o]));
+    assert.deepEqual(by.schema.data.matching, ['ThermostatSensorSelection']);
+    assert.deepEqual(by['mutation-args'].data.map((f) => f.name), ['setThermostatSensors']);
+    assert.deepEqual(by['features-1'].errors, ["Field 'properties' is undefined"]);
+    assert.equal(by['features-2'].data[0].features[0].name, 'temperatureSensorSelection');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});

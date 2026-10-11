@@ -131,6 +131,9 @@ export function createApi({ engine, auth, driver }) {
       case 'POST /api/signout-everyone':
         auth.rotate();
         return json(200, { ok: true }, { 'Set-Cookie': auth.logoutCookie() });
+      case 'POST /api/debug/probe':
+        if (!driver.probe) throw Object.assign(new Error('Not available in demo mode'), { status: 400 });
+        return json(200, { probe: await driver.probe() });
       case 'GET /api/debug/devices':
         return new Response(JSON.stringify(await driver.raw(), null, 2), {
           headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },

@@ -582,6 +582,61 @@ export class AlexaDriver extends EventEmitter {
     this.scale = s.scale || this.scale;
   }
 
+  // Asks Amazon's GraphQL API what it can do with thermostats and sensors, to
+  // find how the Alexa app picks the thermostat's temperature sensors. Only
+  // schema names and this thermostat's features come back, never tokens.
+  async probe() {
+    const out = [];
+    const gql = async (label, query) => {
+      try {
+        const res = await this.#api('/nexus/v1/graphql', { method: 'POST', body: { query } });
+        out.push({ label, data: res?.data ?? null, errors: res?.errors?.map((e) => e.message) });
+        return res?.data;
+      } catch (err) {
+        out.push({ label, error: err.message });
+        return null;
+      }
+    };
+    const interesting = /sensor|thermostat|temperature|setting|feature|preference/i;
+    const schema = await gql('schema', '{ __schema { queryType { name } mutationType { name } types { name kind } } }');
+    const types = schema?.__schema?.types || [];
+    const mutationType = schema?.__schema?.mutationType?.name;
+    if (mutationType) {
+      const m = await gql('mutations', `{ __type(name: "${mutationType}") { fields { name } } }`);
+      const names = (m?.__type?.fields || []).map((f) => f.name);
+      out.at(-1).data = { all: names };
+      const pick = names.filter((n) => interesting.test(n)).slice(0, 40);
+      if (pick.length) {
+        const detail = await gql('mutation-args', `{ __type(name: "${mutationType}") { fields { name args { name type { name kind ofType { name kind ofType { name } } } } } } }`);
+        out.at(-1).data = (detail?.__type?.fields || []).filter((f) => pick.includes(f.name));
+      }
+    }
+    const typeNames = types.map((t) => t.name).filter((n) => interesting.test(n) && !n.startsWith('__')).slice(0, 25);
+    out.find((o) => o.label === 'schema').data = { typeCount: types.length, matching: typeNames, queryType: schema?.__schema?.queryType?.name, mutationType };
+    for (const name of typeNames) {
+      await gql(`type ${name}`, `{ __type(name: "${name}") { kind fields { name args { name } type { name kind ofType { name } } } inputFields { name type { name kind ofType { name } } } enumValues { name } } }`);
+    }
+    // What the thermostat itself advertises in the newer "features" model.
+    const dev = this.devices.get(this.thermostatId);
+    if (dev) {
+      const q = (sel) => `{ endpoints { items { endpointId friendlyName legacyAppliance { applianceId } ${sel} } } }`;
+      for (const [label, sel] of [
+        ['features-1', 'features { name instance properties { name } operations { name } }'],
+        ['features-2', 'features { name instance operations { name } }'],
+        ['features-3', 'features { name }'],
+      ]) {
+        const d = await gql(label, q(sel));
+        const items = d?.endpoints?.items;
+        if (items) {
+          out.at(-1).data = items.filter((i) => i.legacyAppliance?.applianceId === dev.id);
+          break;
+        }
+      }
+    }
+    out.push({ label: 'readings', data: this.lastRaw.state?.deviceStates?.map((d) => ({ id: d.entity?.entityId, caps: (d.capabilityStates || []).map(parseMaybeJson).map((c) => `${c.namespace}.${c.name}=${JSON.stringify(c.value)}`) })) });
+    return out;
+  }
+
   // For the device inspector page: what Amazon returned (never the tokens).
   async raw() {
     return {

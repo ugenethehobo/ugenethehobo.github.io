@@ -630,6 +630,7 @@ function viewSettings() {
       <div class="row"><div class="row-main"><div>${c.state === 'connected' ? 'Connected' : esc(c.message || c.state)}</div><div class="sub">Last reading ${esc(ago(c.lastPollAt))} · checks every ${s.pollSeconds}s</div></div></div>
       <button class="row" data-act="rediscover"><div>Re-scan devices</div><span class="right">${icon('refresh')}</span></button>
       <button class="row" data-act="link-amazon"><div>${c.state === 'connected' ? 'Re-link Amazon account' : 'Link Amazon account'}</div><span class="right">›</span></button>
+      <button class="row" data-act="probe"><div class="row-main"><div>Sensor API probe</div><div class="sub">Asks Amazon how sensor selection works, for troubleshooting</div></div><span class="right">›</span></button>
       <a class="row" href="/api/debug/devices" target="_blank" rel="noopener"><div class="row-main"><div>Device inspector</div><div class="sub">Raw data from Amazon, for troubleshooting</div></div><span class="right">›</span></a>
     </div>
     <div class="section"><h2>Household</h2></div>
@@ -750,6 +751,18 @@ function renderLinkSheet() {
 
 $sheet.addEventListener('click', async (ev) => {
   const act = ev.target.closest('[data-act]')?.dataset.act;
+  if (act === 'copy-probe') {
+    const ta = document.getElementById('probe-text');
+    try {
+      await navigator.clipboard.writeText(ta.value);
+      toast('Copied');
+    } catch {
+      ta.focus();
+      ta.select();
+      toast('Selected. Tap Copy.');
+    }
+    return;
+  }
   if (act === 'close-link') {
     $sheet.innerHTML = '';
     return;
@@ -949,6 +962,25 @@ $app.addEventListener('click', async (ev) => {
       return renderLogin();
     case 'use-phone-tz':
       return saveSettings({ timeZone: phoneTz() });
+    case 'probe': {
+      $sheet.innerHTML = `<div class="sheet-backdrop" data-act="close-link"></div><div class="sheet"><div class="grab"></div>
+        <header><h3>Sensor API probe</h3><button class="btn small secondary" data-act="close-link">Close</button></header>
+        <div class="group"><div><span class="spinner sm"></span> Asking Amazon… this can take up to a minute.</div></div></div>`;
+      let text;
+      try {
+        const r = await api('POST', '/api/debug/probe', null, { timeout: 90000 });
+        text = JSON.stringify(r.probe);
+      } catch (err) {
+        text = `Probe failed: ${err.message}`;
+      }
+      $sheet.innerHTML = `<div class="sheet-backdrop" data-act="close-link"></div><div class="sheet"><div class="grab"></div>
+        <header><h3>Sensor API probe</h3><button class="btn small secondary" data-act="close-link">Close</button></header>
+        <div class="group"><div>Copy this and paste it into your chat. It has device names and Amazon’s API layout, but no passwords or tokens.</div>
+        <button class="btn" data-act="copy-probe">Copy result</button>
+        <textarea class="input" id="probe-text" rows="10" readonly></textarea></div></div>`;
+      document.getElementById('probe-text').value = text;
+      return;
+    }
     case 'link-amazon':
       return openLinkSheet();
     case 'change-passcode': {
