@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { commandsFor, decide, effectiveTemp, inferSelectedSensors } from './controller.js';
+import { commandsFor, decide, effectiveTemp, inferSelectedSensors, sensorsKey } from './controller.js';
 import { effectiveProgram, isValidTimeZone, nextChange, storeTimeZone } from './schedule.js';
 
 const MODES = ['off', 'heat', 'cool', 'smart'];
@@ -170,6 +170,8 @@ export class Engine extends EventEmitter {
       allowed: r.allowed,
       alexaSchedule: r.alexaSchedule,
       humidity: r.humidity,
+      sensors: r.sensors,
+      sensorControl: !!this.driver.sensorControl,
     };
     for (const [k, a] of Object.entries(this.assumed)) if (a.until > now) t[k] = a.value;
     return t;
@@ -180,14 +182,28 @@ export class Engine extends EventEmitter {
     const now = Date.now();
     for (const [k, a] of Object.entries(this.assumed)) {
       const seen = r[k];
-      const match = k === 'setpoint' ? Math.abs(seen - a.value) < 0.6 : seen === a.value;
+      const same = (x, y) => (Array.isArray(y) ? sensorsKey(x) === sensorsKey(y) : x === y);
+      const match = k === 'setpoint' ? Math.abs(seen - a.value) < 0.6 : same(seen, a.value);
       if (match) {
-        for (const c of this.commands) if (c.field === k && c.value === a.value && c.state === 'sent') c.state = 'confirmed';
+        for (const c of this.commands) if (c.field === k && same(c.value, a.value) && c.state === 'sent') c.state = 'confirmed';
         delete this.assumed[k];
       } else if (a.until <= now) {
         delete this.assumed[k];
       }
     }
+  }
+
+  // The first time the app can read the sensors chosen in Alexa, start from
+  // that choice instead of overwriting it with an old default.
+  #adoptAlexaSensors(t) {
+    const s = this.store.settings;
+    if (s.sensorsAdopted || !t.sensorControl || !Array.isArray(t.sensors) || !t.sensors.length) return;
+    s.sensorsAdopted = true;
+    this.store.base.sensors = [...t.sensors];
+    for (const e of this.store.schedule.entries) e.sensors = [...t.sensors];
+    if (this.store.override) delete this.store.override.sensors;
+    logActivity(this.store, 'System', 'Now choosing temperature sensors from this app, starting from your Alexa selection');
+    this.save();
   }
 
   #expireOverride(now) {
@@ -208,6 +224,7 @@ export class Engine extends EventEmitter {
     }
     const eff = effectiveProgram(this.store, new Date(now));
     const thermostat = this.thermostatState();
+    this.#adoptAlexaSensors(thermostat);
     const d = decide({ program: eff.program, thermostat, runtime: this.store.runtime, settings: this.store.settings, now });
     this.store.runtime = d.runtime;
     const eTemp = effectiveTemp(thermostat);
@@ -234,7 +251,7 @@ export class Engine extends EventEmitter {
     }
     const results = [];
     // Mode first: a set point only applies to the thermostat's current mode.
-    for (const field of ['mode', 'setpoint', 'fan']) {
+    for (const field of ['mode', 'setpoint', 'fan', 'sensors']) {
       if (cmds[field] === undefined) continue;
       if (field === 'setpoint' && cmds.mode !== undefined) await sleep(MODE_SETTLE_MS);
       results.push(await this.#send(field, cmds[field]));
@@ -262,6 +279,7 @@ export class Engine extends EventEmitter {
       if (field === 'mode') await this.driver.setMode(value);
       if (field === 'setpoint') await this.driver.setSetpoint(value);
       if (field === 'fan') await this.driver.setFan(value);
+      if (field === 'sensors') await this.driver.setSensors(value);
       cmd.state = 'sent';
       this.assumed[field] = { value, until: Date.now() + ASSUME_MS };
     } catch (err) {
@@ -293,7 +311,7 @@ export class Engine extends EventEmitter {
       out.fan = p.fan;
     }
     if (p.sensors !== undefined) {
-      const known = new Set(this.devices.sensors.map((x) => x.id));
+      const known = new Set(this.devices.sensors.filter((x) => x.eligible !== false).map((x) => x.id));
       const list = [...new Set(Array.isArray(p.sensors) ? p.sensors : [])].filter((id) => known.has(id) || !known.size);
       if (!list.length) throw new Error('Pick at least one sensor');
       out.sensors = list;
@@ -454,7 +472,9 @@ export class Engine extends EventEmitter {
       .filter((x) => !s.hiddenSensors.includes(x.id))
       .map((x) => ({ ...x, name: s.sensorNames[x.id] || x.name, originalName: x.name, ...this.readings[x.id] }));
     const t = this.thermostatState();
-    const inUse = t.sensing === 'EXTERNAL' ? inferSelectedSensors(t.externalTemp, list) : [t.id];
+    const inUse = Array.isArray(t.sensors) && t.sensors.length
+      ? t.sensors
+      : t.sensing === 'EXTERNAL' ? inferSelectedSensors(t.externalTemp, list) : [t.id];
     for (const x of list) x.inUse = !!inUse?.includes(x.id);
     return list;
   }

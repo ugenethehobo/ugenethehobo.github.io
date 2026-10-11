@@ -173,24 +173,54 @@ test('device info saved by an older version is rediscovered', () => {
   assert.equal(d.devices.size, 0);
 });
 
-test('probe reads the paired temperature sensors endpoint', async () => {
+test('reads and changes the thermostat\'s selected sensors like the Alexa app', async () => {
   const realFetch = globalThis.fetch;
-  globalThis.fetch = async (url) => {
-    const u = String(url);
-    if (u.endsWith('/nexus/v1/graphql')) return new Response(JSON.stringify({ data: { endpoints: { items: [{ id: 'amzn1.alexa.endpoint.T', legacyAppliance: { applianceId: 'T' } }] } } }));
-    if (u === 'https://na-api-alexa.amazon.com/api/shNetworking/v1/temperatureSensor/pairedTemperatureSensors/amzn1.alexa.endpoint.T') {
-      return new Response(JSON.stringify({ pairedSensors: ['amzn1.alexa.endpoint.AQ'] }));
+  const E = (x) => `amzn1.alexa.endpoint.${x}`;
+  let paired = { activityToSensorsMapping: { MANUAL: { pairedTemperatureSensorIds: [E('T'), E('AQ1')] }, SCHEDULE: { pairedTemperatureSensorIds: [E('T')] } } };
+  const puts = [];
+  globalThis.fetch = async (url, init = {}) => {
+    const u = new URL(String(url));
+    if (u.pathname === '/nexus/v1/graphql') {
+      return new Response(JSON.stringify({ data: { endpoints: { items: [
+        { endpointId: E('T'), legacyAppliance: { applianceId: 'T', friendlyName: 'Thermostat', applianceTypes: ['THERMOSTAT'], capabilities: [{ interfaceName: 'Alexa.ThermostatController' }, { interfaceName: 'Alexa.TemperatureSensor' }] } },
+        { endpointId: E('AQ1'), legacyAppliance: { applianceId: 'AQ1', friendlyName: 'Bedroom', applianceTypes: ['AIR_QUALITY_MONITOR'], capabilities: [{ interfaceName: 'Alexa.TemperatureSensor' }] } },
+        { endpointId: E('AQ2'), legacyAppliance: { applianceId: 'AQ2', friendlyName: 'Office', applianceTypes: ['AIR_QUALITY_MONITOR'], capabilities: [{ interfaceName: 'Alexa.TemperatureSensor' }] } },
+      ] } } }));
     }
+    assert.equal(u.host, 'na-api-alexa.amazon.com');
+    if (u.pathname === '/api/shNetworking/v1/temperatureSensor/eligibleTemperatureSensors') {
+      return new Response(JSON.stringify({ eligibleSensors: [{ endpointId: E('T') }, { endpointId: E('AQ1') }] }));
+    }
+    if (u.pathname === `/api/shNetworking/v1/temperatureSensor/pairedTemperatureSensors/${encodeURIComponent(E('T'))}`) {
+      if (init.method === 'PUT') {
+        puts.push(JSON.parse(init.body));
+        paired = JSON.parse(init.body);
+        return new Response('', { status: 200 });
+      }
+      return new Response(JSON.stringify(paired));
+    }
+    if (u.pathname === '/api/phoenix/state') return new Response(JSON.stringify({ deviceStates: [{ entity: { entityId: 'T' }, capabilityStates: [] }], errors: [] }));
     return new Response('nope', { status: 404 });
   };
   try {
-    const d = new AlexaDriver({ saved: { refreshToken: 'r', cookie: 'csrf=1', cookieAt: Date.now() } });
-    d.restore({ version: 2, devices: [{ id: 'T', entityId: 'T', name: 'Thermostat' }], thermostatId: 'T', fan: { supported: false, modes: [] } });
-    const out = await d.probe();
-    const get = out.find((o) => o.label === 'GET na-api-alexa.amazon.com');
-    assert.equal(get.status, 200);
-    assert.match(get.body, /pairedSensors/);
-    assert.equal(out.filter((o) => o.label.startsWith('GET')).length, 1);
+    const d = new AlexaDriver({ saved: { refreshToken: 'r', cookie: 'csrf=1', cookieAt: Date.now(), apiHost: 'na-api-alexa.amazon.com' } });
+    await d.connect();
+    const found = await d.discover();
+    d.useThermostat('T');
+    assert.deepEqual(found.sensors.map((x) => [x.id, x.eligible]), [['T', true], ['AQ1', true], ['AQ2', false]]);
+    const r = await d.poll();
+    assert.deepEqual(r.T.sensors, ['AQ1', 'T']);
+    assert.equal(d.sensorControl, true);
+
+    await d.setSensors(['AQ1']);
+    // Only the manual choice changes; the rest of Alexa's mapping is kept.
+    assert.deepEqual(puts[0], { activityToSensorsMapping: { MANUAL: { pairedTemperatureSensorIds: [E('AQ1')] }, SCHEDULE: { pairedTemperatureSensorIds: [E('T')] } } });
+    assert.deepEqual((await d.poll()).T.sensors, ['AQ1']);
+
+    // Survives a restart without rediscovery.
+    const d2 = new AlexaDriver({ saved: d.data });
+    assert.notEqual(d2.restore(d.snapshot()), false);
+    assert.equal(d2.sensorControl, true);
   } finally {
     globalThis.fetch = realFetch;
   }

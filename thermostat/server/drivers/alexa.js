@@ -14,8 +14,9 @@
 import { EventEmitter } from 'node:events';
 
 const TIMEOUT_MS = 15000;
-const SNAPSHOT_VERSION = 2; // bump when saved device info changes shape or meaning
+const SNAPSHOT_VERSION = 3; // bump when saved device info changes shape or meaning
 const COOKIE_REFRESH_MS = 24 * 3600 * 1000;
+const SENSOR_READ_MS = 5 * 60 * 1000; // how often to re-read the selected sensors
 const APP_VERSION = '2.2.651540.0';
 const API_USER_AGENT = 'AmazonWebView/Amazon Alexa/2.2.651540.0/iOS/18.3.1/iPhone';
 const WEB_USER_AGENT = 'AppleWebKit PitanguiBridge/2.2.595606.0-[HARDWARE=iPhone14_7][SOFTWARE=17.4.1][DEVICE=iPhone]';
@@ -101,6 +102,18 @@ export function fanModeLabel(mode) {
   if (asset) return titleCase(asset.split('.').pop());
   const tail = String(mode.value).split('.').pop();
   return /^\d+$/.test(tail) ? `Mode ${tail}` : titleCase(tail);
+}
+
+// Every Alexa endpoint id mentioned anywhere in a response.
+export function endpointIdsIn(value, out = []) {
+  if (typeof value === 'string') {
+    if (/^amzn1\.alexa\.endpoint\./.test(value) && !out.includes(value)) out.push(value);
+  } else if (Array.isArray(value)) {
+    for (const v of value) endpointIdsIn(v, out);
+  } else if (value && typeof value === 'object') {
+    for (const v of Object.values(value)) endpointIdsIn(v, out);
+  }
+  return out;
 }
 
 // Pull the one-time code out of whatever the person pasted.
@@ -423,6 +436,7 @@ export class AlexaDriver extends EventEmitter {
       );
       const dev = {
         id,
+        endpointId: item.endpointId || null,
         entityId: a.entityId || id,
         name: a.friendlyName || item.friendlyName || id,
         kind: isThermostat ? 'thermostat' : types.some((t) => /AIR_QUALITY/i.test(t)) ? 'air-quality' : 'sensor',
@@ -434,6 +448,20 @@ export class AlexaDriver extends EventEmitter {
       if (isThermostat) thermostats.push({ id, name: dev.name });
       sensors.push({ id, name: dev.name, kind: dev.kind });
     }
+    // Which of them the thermostat can follow (the Alexa app's list).
+    this.eligible = null;
+    try {
+      const r = await this.#sh('GET', '/api/shNetworking/v1/temperatureSensor/eligibleTemperatureSensors');
+      const ids = new Set(endpointIdsIn(r));
+      if (ids.size) this.eligible = ids;
+    } catch (err) {
+      this.log.warn?.('Could not read eligible temperature sensors:', err.message);
+    }
+    for (const s of sensors) {
+      const d = this.devices.get(s.id);
+      s.eligible = this.eligible ? this.eligible.has(d.endpointId) : null;
+    }
+    this.sensorReadAt = 0;
     return { thermostats, sensors, fan: this.fan };
   }
 
@@ -476,6 +504,7 @@ export class AlexaDriver extends EventEmitter {
     const res = await this.#api('/api/phoenix/state', { method: 'POST', body: { stateRequests: reqs } });
     this.lastRaw.state = res;
     const now = Date.now();
+    if (now - (this.sensorReadAt || 0) > SENSOR_READ_MS) await this.#readSensors();
     const out = {};
     for (const ds of res?.deviceStates || []) {
       const id = owner.get(ds.entity?.entityId);
@@ -490,6 +519,7 @@ export class AlexaDriver extends EventEmitter {
       const id = owner.get(e.entity?.entityId);
       if (id && !out[id]) out[id] = { reachable: false, at: now, error: e.code };
     }
+    if (this.thermostatId && out[this.thermostatId] && this.selected) out[this.thermostatId].sensors = this.selected;
     return out;
   }
 
@@ -594,6 +624,93 @@ export class AlexaDriver extends EventEmitter {
     return this.#control({ action: 'setModeValue', mode: value, instance: this.fan.instance });
   }
 
+  // ---------- selected temperature sensors ----------
+  // The Alexa app keeps these in a separate smart home service, found by
+  // watching the app: GET .../currentActivitySensors/<thermostat> to read,
+  // PUT .../pairedTemperatureSensors/<thermostat> to change.
+
+  get sensorControl() {
+    return Array.isArray(this.selected);
+  }
+
+  async #sh(method, path, body) {
+    const jar = parseCookies(this.data.cookie);
+    let lastErr;
+    for (const host of [`na-api-alexa.${this.page}`, this.data.apiHost || `alexa.${this.page}`]) {
+      try {
+        const res = await fetch(`https://${host}${path}`, {
+          method,
+          headers: {
+            'User-Agent': WEB_USER_AGENT,
+            'Content-Type': 'application/json; charset=utf-8',
+            Accept: 'application/json; charset=utf-8',
+            'Accept-Language': this.language,
+            Referer: `https://alexa.${this.page}/spa/index.html`,
+            Origin: `https://alexa.${this.page}`,
+            csrf: jar.csrf,
+            Cookie: this.data.cookie,
+          },
+          body: body ? JSON.stringify(body) : undefined,
+          signal: AbortSignal.timeout(TIMEOUT_MS),
+        });
+        const text = await res.text();
+        if (res.ok) return text ? parseMaybeJson(text) : {};
+        lastErr = new Error(`Amazon said ${res.status}${text ? `: ${text.slice(0, 160)}` : ''}`);
+        if (![401, 403, 404].includes(res.status)) break; // only try the other host for auth/route problems
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+    throw lastErr;
+  }
+
+  #thermostatEndpoint() {
+    const id = this.devices.get(this.thermostatId)?.endpointId;
+    if (!id) throw new Error('Thermostat endpoint not known yet');
+    return encodeURIComponent(id);
+  }
+
+  async #readSensors() {
+    try {
+      const tid = this.#thermostatEndpoint();
+      let ids = null;
+      try {
+        const paired = await this.#sh('GET', `/api/shNetworking/v1/temperatureSensor/pairedTemperatureSensors/${tid}`);
+        if (paired?.activityToSensorsMapping) {
+          this.mapping = paired.activityToSensorsMapping;
+          ids = paired.activityToSensorsMapping.MANUAL?.pairedTemperatureSensorIds || null;
+        }
+      } catch {
+        // fall back to the endpoint the app reads
+      }
+      if (!ids) ids = endpointIdsIn(await this.#sh('GET', `/api/shNetworking/v1/temperatureSensor/currentActivitySensors/${tid}`));
+      const byEndpoint = new Map([...this.devices.values()].map((d) => [d.endpointId, d.id]));
+      this.selected = ids.map((e) => byEndpoint.get(e)).filter(Boolean).sort();
+      this.sensorError = null;
+    } catch (err) {
+      this.sensorError = err.message;
+      this.log.warn?.('Could not read selected temperature sensors:', err.message);
+    }
+    this.sensorReadAt = Date.now();
+  }
+
+  // Choose which sensors the thermostat follows (device ids from discover()).
+  async setSensors(ids) {
+    const endpoints = ids.map((id) => this.devices.get(id)?.endpointId).filter(Boolean);
+    if (!endpoints.length) throw new Error('Unknown sensors');
+    const tid = this.#thermostatEndpoint();
+    const mapping = { ...(this.mapping || {}), MANUAL: { pairedTemperatureSensorIds: endpoints } };
+    const run = async () => {
+      await this.#sh('PUT', `/api/shNetworking/v1/temperatureSensor/pairedTemperatureSensors/${tid}`, { activityToSensorsMapping: mapping });
+      this.mapping = mapping;
+      this.selected = [...ids].sort();
+      this.sensorReadAt = Date.now() - SENSOR_READ_MS + 15000; // read back in ~15 s
+    };
+    const p = this.queue.then(run, run);
+    this.queue = p.catch(() => {});
+    return p;
+  }
+
   // Compact device info so a restart doesn't need to rediscover.
   snapshot() {
     return {
@@ -602,6 +719,9 @@ export class AlexaDriver extends EventEmitter {
       fan: this.fan,
       thermostatId: this.thermostatId,
       scale: this.scale,
+      eligible: this.eligible ? [...this.eligible] : null,
+      selected: this.selected || null,
+      mapping: this.mapping || null,
     };
   }
 
@@ -613,6 +733,9 @@ export class AlexaDriver extends EventEmitter {
     this.fan = s.fan || this.fan;
     this.thermostatId = s.thermostatId;
     this.scale = s.scale || this.scale;
+    this.eligible = s.eligible ? new Set(s.eligible) : null;
+    this.selected = s.selected || null;
+    this.mapping = s.mapping || null;
   }
 
   // Reads the thermostat's paired temperature sensors from the endpoint the
@@ -625,31 +748,21 @@ export class AlexaDriver extends EventEmitter {
     const endpointId = list?.data?.endpoints?.items?.find((i) => i.legacyAppliance?.applianceId === dev?.id)?.id;
     out.push({ label: 'thermostat-endpoint', data: endpointId || null });
     if (!endpointId) return out;
-    const path = `/api/shNetworking/v1/temperatureSensor/pairedTemperatureSensors/${encodeURIComponent(endpointId)}`;
-    for (const host of [`na-api-alexa.${this.page}`, this.data.apiHost || `alexa.${this.page}`]) {
+    const enc = encodeURIComponent(endpointId);
+    for (const path of [
+      `/api/shNetworking/v1/temperatureSensor/pairedTemperatureSensors/${enc}`,
+      `/api/shNetworking/v1/temperatureSensor/currentActivitySensors/${enc}`,
+      '/api/shNetworking/v1/temperatureSensor/eligibleTemperatureSensors',
+    ]) {
       try {
-        const jar = parseCookies(this.data.cookie);
-        const res = await fetch(`https://${host}${path}`, {
-          headers: {
-            'User-Agent': WEB_USER_AGENT,
-            Accept: 'application/json; charset=utf-8',
-            'Accept-Language': this.language,
-            Referer: `https://alexa.${this.page}/spa/index.html`,
-            Origin: `https://alexa.${this.page}`,
-            csrf: jar.csrf,
-            Cookie: this.data.cookie,
-          },
-          signal: AbortSignal.timeout(TIMEOUT_MS),
-        });
-        const text = await res.text();
-        out.push({ label: `GET ${host}`, status: res.status, body: text.slice(0, 4000) });
-        if (res.ok) break;
+        const body = await this.#sh('GET', path);
+        out.push({ label: `GET ${path.split('/').slice(4, 6).join('/')}`, ok: true, body: JSON.stringify(body).slice(0, 3000) });
       } catch (err) {
-        out.push({ label: `GET ${host}`, error: err.message });
+        out.push({ label: `GET ${path.split('/').slice(4, 6).join('/')}`, error: err.message });
       }
     }
     // Sensor ids, to match against whatever the endpoint returns.
-    out.push({ label: 'sensors', data: [...this.devices.values()].map((d) => ({ name: d.name, id: d.id, entityId: d.entityId, kind: d.kind })) });
+    out.push({ label: 'sensors', data: [...this.devices.values()].map((d) => ({ name: d.name, endpointId: d.endpointId, kind: d.kind })), selected: this.selected || null, sensorError: this.sensorError || null });
     return out;
   }
 

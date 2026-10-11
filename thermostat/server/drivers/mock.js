@@ -18,6 +18,7 @@ export class MockDriver extends EventEmitter {
     // change restores that mode's remembered set point a moment later.
     this.remembered = { HEAT: 69, COOL: 67 };
     this.running = null;
+    this.selected = ['mock-aq-bedroom'];
     this.last = Date.now();
     this.info = { state: 'connected', message: 'Demo mode: simulated thermostat' };
   }
@@ -37,6 +38,7 @@ export class MockDriver extends EventEmitter {
         id,
         name: r.name,
         kind: id === 'mock-thermostat' ? 'thermostat' : 'air-quality',
+        eligible: true,
       })),
       fan: { supported: true, modes: [{ value: 'auto', label: 'Auto' }, { value: 'on', label: 'On' }, { value: 'circulate', label: 'Circulate' }] },
       modes: ['HEAT', 'COOL', 'AUTO', 'OFF'],
@@ -55,8 +57,8 @@ export class MockDriver extends EventEmitter {
   }
 
   #step(hours) {
-    // Like the real one with "Selected temperature sensors": regulates on the bedroom monitor.
-    const t = this.rooms['mock-aq-bedroom'].temp;
+    // Like the real one with "Selected temperature sensors": regulates on their average.
+    const t = this.#sensed();
     const { mode, setpoint } = this.device;
     if (this.running === 'heat' && (mode !== 'HEAT' || t >= setpoint + 0.5)) this.running = null;
     if (this.running === 'cool' && (mode !== 'COOL' || t <= setpoint - 0.5)) this.running = null;
@@ -67,6 +69,20 @@ export class MockDriver extends EventEmitter {
       const hvac = this.running === 'heat' ? 4 * hours : this.running === 'cool' ? -4 * hours : 0;
       room.temp += drift + hvac;
     }
+  }
+
+  #sensed() {
+    return this.selected.reduce((a, id) => a + this.rooms[id].temp, 0) / this.selected.length;
+  }
+
+  get sensorControl() {
+    return true;
+  }
+
+  async setSensors(ids) {
+    await delay(500);
+    this.#tick();
+    this.selected = [...ids].sort();
   }
 
   useThermostat() {
@@ -86,7 +102,8 @@ export class MockDriver extends EventEmitter {
       fan: this.device.fan,
       fanSupported: true,
       sensing: 'EXTERNAL',
-      externalTemp: round1(this.rooms['mock-aq-bedroom'].temp),
+      externalTemp: Math.round(this.#sensed()),
+      sensors: this.selected,
       cooler: this.running === 'cool' ? 'STAGE_1' : 'OFF',
       heater: this.running === 'heat' ? 'STAGE_1' : 'OFF',
       fanRunning: this.running ? 'STAGE_1' : 'OFF',

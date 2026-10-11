@@ -43,7 +43,9 @@ export function decide({ program, thermostat: t, runtime, settings, now }) {
   const reported = runningAction(t);
 
   if (program.mode === 'off') {
-    return { action: 'off', reason: 'System is off', want: { mode: 'OFF', setpoint: null }, runtime: rt };
+    const want = { mode: 'OFF', setpoint: null };
+    if (t.sensorControl && program.sensors?.length) want.sensors = [...program.sensors].sort();
+    return { action: 'off', reason: 'System is off', want, runtime: rt };
   }
 
   let mode;
@@ -86,7 +88,10 @@ export function decide({ program, thermostat: t, runtime, settings, now }) {
   if (!action) {
     action = typeof m !== 'number' ? 'unknown' : mode === 'COOL' ? (m > target ? 'cooling' : 'idle') : m < target ? 'heating' : 'idle';
   }
-  return { action, inferred, reason, want: { mode, setpoint: clampTarget(target, mode, t.allowed) }, runtime: rt };
+  const want = { mode, setpoint: clampTarget(target, mode, t.allowed) };
+  // Which sensors the thermostat should follow, when the app can choose them.
+  if (t.sensorControl && program.sensors?.length) want.sensors = [...program.sensors].sort();
+  return { action, inferred, reason, want, runtime: rt };
 }
 
 // Which commands to send so the thermostat matches `want`.
@@ -99,6 +104,10 @@ export function commandsFor(want, thermostat, program, step = 1) {
   }
   if (program.fan && thermostat.fanSupported && thermostat.fan && thermostat.fan !== program.fan) {
     cmds.fan = program.fan;
+  }
+  // Only change sensors once the current selection is known.
+  if (want.sensors && Array.isArray(thermostat.sensors) && sensorsKey(thermostat.sensors) !== sensorsKey(want.sensors)) {
+    cmds.sensors = want.sensors;
   }
   return cmds;
 }
@@ -117,3 +126,5 @@ export function inferSelectedSensors(externalTemp, sensors) {
   }
   return matches.length === 1 ? matches[0] : null;
 }
+
+export const sensorsKey = (ids) => [...(ids || [])].sort().join('|');

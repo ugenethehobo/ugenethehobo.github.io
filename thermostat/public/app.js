@@ -359,7 +359,7 @@ function viewHome(p) {
       </div>` : ''}
     <div class="section"><h2>Sensors</h2></div>
     <div class="sensors">
-      ${st.sensors.map((s) => sensorCard(s)).join('') || '<div class="muted small">No sensors found yet.</div>'}
+      ${st.sensors.map((s) => sensorCard(s, p)).join('') || '<div class="muted small">No sensors found yet.</div>'}
     </div>
     <p class="sensor-help">${sensorHelp(status)}</p>
     ${recentActivity()}`;
@@ -389,16 +389,33 @@ function smartHint(p) {
   return `A/C turns on at ${fmtTarget(p.target + t)}°, heat at ${fmtTarget(p.target - t)}°`;
 }
 
+const canChooseSensors = () => !!S.state?.thermostat?.sensorControl;
+
 function sensorHelp(status) {
   const used = S.state.sensors.filter((s) => s.inUse);
+  if (canChooseSensors()) {
+    const names = used.map((s) => esc(s.name)).join(' + ') || 'its own sensor';
+    const pending = S.state.commands.some((c) => c.field === 'sensors' && (c.state === 'sending' || c.state === 'sent'));
+    return `${pending ? 'Switching sensors…' : `The thermostat is following ${names}${typeof status.measured === 'number' ? `, ${fmtTemp(status.measured)}° right now` : ''}.`} Tap a sensor to use just that one, or tap its + to average several.`;
+  }
   if (status.source !== 'selected') return 'The thermostat is using its own sensor. To use an air monitor, pick it in the Alexa app: Devices → thermostat → Selected temperature sensors.';
   const who = used.length ? `${used.map((s) => esc(s.name)).join(' + ')} (matched from the readings)` : `the sensors selected in the Alexa app`;
   return `✓ The thermostat is following ${who}, ${fmtTemp(status.measured)}° right now. To change sensors, use the Alexa app: Devices → thermostat → Selected temperature sensors.`;
 }
 
-function sensorCard(s) {
+function sensorCard(s, p) {
   const offline = s.reachable === false || typeof s.temp !== 'number';
   const kind = s.kind === 'thermostat' ? 'Thermostat' : s.kind === 'air-quality' ? 'Air monitor' : 'Sensor';
+  if (canChooseSensors() && s.eligible !== false) {
+    const on = (p?.sensors || []).includes(s.id);
+    return `
+    <button class="sensor ${offline ? 'offline' : ''} ${S.pending.sensors ? 'sending' : ''}" data-sensor="${esc(s.id)}" aria-pressed="${on}" aria-label="Use ${esc(s.name)}">
+      <span class="combine" data-combine="${esc(s.id)}" role="button" aria-label="${on ? 'Remove from' : 'Add to'} average">${on ? '✓' : '+'}</span>
+      <span class="name">${esc(s.name)}</span>
+      <span class="temp">${offline ? 'Offline' : `${fmtTemp(s.temp)}°`}</span>
+      <span class="meta"><span class="tag">${kind}</span>${typeof s.humidity === 'number' ? `<span>${Math.round(s.humidity)}%</span>` : ''}${s.inUse && !on ? '<span>in use</span>' : ''}</span>
+    </button>`;
+  }
   return `
     <div class="sensor ${offline ? 'offline' : ''}" aria-pressed="${!!s.inUse}">
       ${s.inUse ? '<span class="combine" aria-label="In use">✓</span>' : ''}
@@ -514,7 +531,7 @@ function viewSchedule() {
           <span class="entry-time">${esc(time12(e.time))}</span>
           <span class="row-main" style="flex:1">
             <div>${esc(e.name || modeLabel(e.mode))} <span class="badge">${e.mode === 'off' ? 'Off' : `${modeLabel(e.mode)} ${fmtTarget(e.target)}°`}</span></div>
-            <div class="sub">${esc(daysLabel(e.days))}</div>
+            <div class="sub">${esc(daysLabel(e.days))}${canChooseSensors() && e.sensors?.length ? ` · ${esc(e.sensors.map(sensorName).join(' + '))}` : ''}</div>
           </span>
           <span class="right">›</span>
         </button>`).join('') : `<div class="empty">No times yet.<br>Add one, like “Night · 10:00 PM · 66° · Bedroom”.</div>`}
@@ -563,6 +580,11 @@ function renderEditor() {
         ${e.mode !== 'off' ? `<div class="settings-num"><span>Temperature</span>
           <div class="mini-step"><button data-ed-step="-1">−</button><span>${fmtTarget(e.target)}°</span><button data-ed-step="1">+</button></div></div>` : ''}
       </div>
+      ${canChooseSensors() ? `<div class="group">
+        <div class="lbl">Temperature from</div>
+        <div class="chips">${st.sensors.filter((s) => s.eligible !== false).map((s) => `<button data-ed-sensor="${esc(s.id)}" aria-pressed="${e.sensors.includes(s.id)}">${esc(s.name)}</button>`).join('')}</div>
+        ${e.sensors.length > 1 ? '<div class="small muted">Averaging the selected sensors.</div>' : ''}
+      </div>` : ''}
       ${st.fan.supported ? `<div class="group"><div class="lbl">Fan</div>
         <div class="chips">${st.fan.modes.map((m) => `<button data-ed-fan="${esc(m.value)}" aria-pressed="${e.fan === m.value}">${esc(m.label)}</button>`).join('')}</div></div>` : ''}
       <div class="actions">

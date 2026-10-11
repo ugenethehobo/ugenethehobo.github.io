@@ -91,3 +91,17 @@ test('works out which sensors the thermostat is following', async () => {
   assert.equal(inferSelectedSensors(67, sensors), null); // aq2+th and th alone both fit
   assert.equal(inferSelectedSensors(undefined, sensors), null);
 });
+
+test('switches the thermostat to the program\'s sensors once their state is known', () => {
+  const program = { mode: 'cool', target: 68, sensors: ['aq2', 'aq1'] };
+  const t = { mode: 'COOL', setpoint: 68, sensorControl: true, sensors: ['aq1'] };
+  const d = run(program, t);
+  assert.deepEqual(d.want.sensors, ['aq1', 'aq2']);
+  assert.deepEqual(commandsFor(d.want, t, program), { sensors: ['aq1', 'aq2'] });
+  // Same set in a different order: nothing to send
+  assert.deepEqual(commandsFor(d.want, { ...t, sensors: ['aq2', 'aq1'] }, program), {});
+  // Selection not readable yet: never write blind
+  assert.deepEqual(commandsFor(d.want, { ...t, sensors: undefined }, program), {});
+  // No sensor control: sensors aren't part of the decision
+  assert.equal(run(program, { ...t, sensorControl: false }).want.sensors, undefined);
+});
