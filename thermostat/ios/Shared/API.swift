@@ -81,6 +81,9 @@ struct ClimateAPI {
             struct Failure: Decodable { let error: String? }
             let message = (try? JSONDecoder().decode(Failure.self, from: data))?.error
             if status == 401 { SharedStore.token = nil }
+            if status == 404 {
+                throw ClimateError(message: "Your server doesn’t have this feature yet. If you just updated it, wait a few minutes for Cloudflare to finish deploying, then pull down to refresh.")
+            }
             throw ClimateError(message: message ?? "Server error \(status)")
         }
         return data
