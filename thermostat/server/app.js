@@ -98,6 +98,8 @@ export function createApi({ engine, auth, driver }) {
     };
 
     switch (key) {
+      case 'GET /api/schedule':
+        return json(200, engine.scheduleState());
       case 'GET /api/widget':
         return json(200, { me: by, widget: engine.widgetState() });
       case 'GET /api/state':

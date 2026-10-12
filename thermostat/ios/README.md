@@ -7,7 +7,7 @@ A native SwiftUI app for Home Climate, with widgets:
 - **Controls** for Control Center, the Lock Screen and the Action button: Warmer, Cooler, Thermostat Mode (you pick the mode) and Use Sensor (you pick the sensor).
 - **Siri and Shortcuts:** "Make it warmer with Climate", "Set Climate to Cool", "Use Bedroom with Climate", "Resume the Climate schedule". "Set Temperature" is available in the Shortcuts app.
 
-It talks to the same Cloudflare server as the web app. Schedules and settings open in the web app.
+It talks to the same Cloudflare server as the web app. The schedule (including which sensors each time uses) is in the app via the calendar button; other settings open in the web app.
 
 Requires iOS 18 and Xcode 16 or later.
 

@@ -34,6 +34,15 @@ struct ClimateAPI {
         try decodeState(try await send("/api/control?view=widget", method: "POST", body: body))
     }
 
+    func schedule() async throws -> ScheduleState {
+        try JSONDecoder().decode(ScheduleState.self, from: try await send("/api/schedule", method: "GET", body: nil))
+    }
+
+    func saveSchedule(_ schedule: ScheduleState.Schedule) async throws -> ClimateState {
+        let data = try JSONEncoder().encode(schedule)
+        return try decodeState(try await send("/api/schedule?view=widget", method: "PUT", body: nil, rawBody: data))
+    }
+
     func resume() async throws -> ClimateState {
         try decodeState(try await send("/api/resume?view=widget", method: "POST", body: [:]))
     }
@@ -43,7 +52,7 @@ struct ClimateAPI {
         return try JSONDecoder().decode(Reply.self, from: data).widget
     }
 
-    private func send(_ path: String, method: String, body: [String: Any]?, auth: Bool = true) async throws -> Data {
+    private func send(_ path: String, method: String, body: [String: Any]?, rawBody: Data? = nil, auth: Bool = true) async throws -> Data {
         guard let url = URL(string: path, relativeTo: baseURL)?.absoluteURL else {
             throw ClimateError(message: "Bad server address")
         }
@@ -53,6 +62,9 @@ struct ClimateAPI {
         if let body {
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
             req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        } else if let rawBody {
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = rawBody
         }
         if auth, let token {
             req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -96,6 +108,17 @@ enum Climate {
     @discardableResult
     static func control(_ body: [String: Any]) async throws -> ClimateState {
         let state = try await api().control(body)
+        save(state, reloadWidgets: true)
+        return state
+    }
+
+    static func schedule() async throws -> ScheduleState {
+        try await api().schedule()
+    }
+
+    @discardableResult
+    static func saveSchedule(_ schedule: ScheduleState.Schedule) async throws -> ClimateState {
+        let state = try await api().saveSchedule(schedule)
         save(state, reloadWidgets: true)
         return state
     }

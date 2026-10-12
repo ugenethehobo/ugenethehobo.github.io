@@ -37,3 +37,26 @@ test('widget state is compact and complete', async () => {
   assert.deepEqual(w.sensors.filter((s) => s.inUse).map((s) => s.id), ['mock-aq-bedroom']);
   assert.ok(JSON.stringify(w).length < 4000);
 });
+
+test('adopting the Alexa sensor choice never overwrites scheduled sensors', async () => {
+  const d = new MockDriver();
+  const e = new Engine(d, newStore({
+    schedule: { enabled: true, entries: [
+      { id: 'night', time: '22:00', days: [0, 1, 2, 3, 4, 5, 6], mode: 'heat', target: 66, sensors: ['mock-aq-living'] },
+      { id: 'blank', time: '07:00', days: [1], mode: 'heat', target: 70, sensors: [] },
+    ] },
+  }), { schedule: () => {} });
+  await e.start({ pollNow: false });
+  await e.poll();
+  const by = Object.fromEntries(e.store.schedule.entries.map((x) => [x.id, x.sensors]));
+  assert.deepEqual(by.night, ['mock-aq-living']);
+  assert.deepEqual(by.blank, ['mock-aq-bedroom']);
+});
+
+test('schedule state for the iPhone app', async () => {
+  const { e } = await engine();
+  const s = e.scheduleState();
+  assert.equal(s.sensorControl, true);
+  assert.equal(s.sensors.length, 3);
+  assert.ok(Array.isArray(s.schedule.entries));
+});

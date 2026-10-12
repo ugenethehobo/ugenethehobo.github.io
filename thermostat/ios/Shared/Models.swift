@@ -145,3 +145,37 @@ enum Temp {
         return "\(Int(v.rounded()))°"
     }
 }
+
+/// GET /api/schedule: the weekly schedule plus what's needed to edit it.
+struct ScheduleState: Codable, Equatable {
+    struct Entry: Codable, Equatable, Identifiable {
+        var id: String
+        var name: String
+        var time: String          // "HH:mm", household time
+        var days: [Int]           // 0 = Sunday
+        var mode: String
+        var target: Double        // °F
+        var fan: String?
+        var sensors: [String]
+    }
+
+    struct Schedule: Codable, Equatable {
+        var enabled: Bool
+        var entries: [Entry]
+    }
+
+    struct Sensor: Codable, Equatable, Identifiable {
+        var id: String
+        var name: String
+        var kind: String?
+    }
+
+    var unit: String
+    var timeZone: String?
+    var schedule: Schedule
+    var activeId: String?
+    var sensorControl: Bool
+    var sensors: [Sensor]
+    var fanModes: [ClimateState.FanMode]
+    var program: ClimateState.Program
+}

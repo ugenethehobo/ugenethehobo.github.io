@@ -204,7 +204,8 @@ export class Engine extends EventEmitter {
     if (s.sensorsAdopted || !t.sensorControl || !Array.isArray(t.sensors) || !t.sensors.length) return;
     s.sensorsAdopted = true;
     this.store.base.sensors = [...t.sensors];
-    for (const e of this.store.schedule.entries) e.sensors = [...t.sensors];
+    // Never overwrite sensors chosen for scheduled times; only fill in gaps.
+    for (const e of this.store.schedule.entries) if (!e.sensors?.length) e.sensors = [...t.sensors];
     if (this.store.override) delete this.store.override.sensors;
     logActivity(this.store, 'System', 'Now choosing temperature sensors from this app, starting from your Alexa selection');
     this.save();
@@ -483,6 +484,20 @@ export class Engine extends EventEmitter {
 
   // A small summary for the iPhone app and widgets. Temperatures are °F;
   // `unit` says how to show them.
+  // The schedule plus what's needed to edit it, for the iPhone app.
+  scheduleState() {
+    return {
+      unit: this.store.settings.unit,
+      timeZone: this.store.settings.timeZone,
+      schedule: this.store.schedule,
+      activeId: effectiveProgram(this.store).entry?.id || null,
+      sensorControl: !!this.thermostatState().sensorControl,
+      sensors: this.#sensorList().filter((x) => x.eligible !== false).map((x) => ({ id: x.id, name: x.name, kind: x.kind })),
+      fanModes: this.devices.fan.supported ? this.devices.fan.modes : [],
+      program: effectiveProgram(this.store).program,
+    };
+  }
+
   widgetState() {
     const now = Date.now();
     const eff = effectiveProgram(this.store, new Date(now));

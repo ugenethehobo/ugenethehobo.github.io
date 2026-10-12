@@ -27,9 +27,17 @@ struct MainView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { StatusPill() }
                 ToolbarItem(placement: .topBarTrailing) {
+                    NavigationLink {
+                        ScheduleView()
+                    } label: {
+                        Image(systemName: "calendar")
+                    }
+                    .accessibilityLabel("Schedule")
+                }
+                ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         if let url = model.webURL {
-                            Link(destination: url) { Label("Schedule & settings", systemImage: "calendar") }
+                            Link(destination: url) { Label("Settings (web app)", systemImage: "gearshape") }
                         }
                         Button(role: .destructive) { model.signOut() } label: {
                             Label("Sign out", systemImage: "rectangle.portrait.and.arrow.right")
