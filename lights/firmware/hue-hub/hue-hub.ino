@@ -25,11 +25,7 @@
 
 #define FW_VERSION "1.0.0"
 
-#if defined(CONFIG_IDF_TARGET_ESP32C3) || defined(CONFIG_IDF_TARGET_ESP32C6)
-static const int BOOT_PIN = 9;
-#else
-static const int BOOT_PIN = 0;
-#endif
+// BOOT_PIN (the board's BOOT button) comes from the ESP32 core, per chip.
 
 // How many lights stay connected at once (the Bluetooth stack allows 9;
 // one is kept free for pairing). More lights still work: the least recently
@@ -795,7 +791,8 @@ static void startWs() {
   parseServer();
   path = "/api/hub?id=" + hubId + "&fw=" FW_VERSION;
   if (token.length()) path += "&token=" + token;
-  wsReady = wsPending = false;
+  wsReady = false;
+  wsPending = false;
   if (secure) ws.beginSSL(host.c_str(), port, path.c_str());
   else ws.begin(host.c_str(), port, path.c_str());
   ws.setReconnectInterval(5000);
@@ -808,7 +805,8 @@ static void onWs(WStype_t type, uint8_t* payload, size_t length) {
       Serial.println("Connected to server");
       break;
     case WStype_DISCONNECTED:
-      wsReady = wsPending = false;
+      wsReady = false;
+      wsPending = false;
       break;
     case WStype_TEXT: {
       JsonDocument m;

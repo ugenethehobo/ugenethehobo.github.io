@@ -41,7 +41,12 @@ jobs:
           arduino-cli lib install "NimBLE-Arduino@2.5.0" "WebSockets@2.7.2" "ArduinoJson@7.4.3" "WiFiManager@2.0.17"
       - name: Compile
         run: |
-          arduino-cli compile --fqbn "${{ matrix.fqbn }}" --warnings default --export-binaries --output-dir out lights/firmware/hue-hub
+          set -o pipefail
+          if ! arduino-cli compile --fqbn "${{ matrix.fqbn }}" --warnings default --export-binaries --output-dir out lights/firmware/hue-hub 2>&1 | tee build.log; then
+            echo "::group::Errors"; grep -n -B2 -A6 "error:" build.log | head -150; echo "::endgroup::"
+            echo "----- ERRORS -----"; grep -n "error:" build.log | head -40
+            exit 1
+          fi
           ls -la out
           cp out/hue-hub.ino.merged.bin hue-hub-${{ matrix.chip }}.bin
       - uses: actions/upload-artifact@v4
