@@ -86,8 +86,9 @@ struct Light {
   uint32_t fadeStart = 0, fadeMs = 0, fadeNext = 0;
 };
 
-void LightCallbacks::onDisconnect(NimBLEClient*, int) {
-  if (light) {
+void LightCallbacks::onDisconnect(NimBLEClient* client, int) {
+  // Ignore a late notice from a connection we already replaced.
+  if (light && light->client == client) {
     light->connected = false;
     light->dropped = true;
   }
@@ -351,6 +352,7 @@ static bool bindChars(Light* l) {
 
 static void freeClient(Light* l) {
   if (l->client) {
+    l->client->setClientCallbacks(nullptr, false);  // no notices from this one any more
     if (l->client->isConnected()) l->client->disconnect();
     NimBLEDevice::deleteClient(l->client);
     l->client = nullptr;
