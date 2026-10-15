@@ -1,0 +1,11 @@
+name: ESPN probe (temporary)
+on:
+  push:
+    paths: ['.github/probe/**', '.github/workflows/espn-probe.yml']
+  workflow_dispatch:
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 .github/probe/espn.py
