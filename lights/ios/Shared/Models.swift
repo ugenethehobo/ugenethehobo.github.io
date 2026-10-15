@@ -20,18 +20,26 @@ struct HomeState: Codable {
     var onCount: Int { lights.filter { $0.on && $0.reachable }.count }
 
     /// Rooms in display order, with lights that have no room at the end.
-    var groups: [(room: String, lights: [Light])] {
-        var out: [(String, [Light])] = []
+    var groups: [LightGroup] {
+        var out: [LightGroup] = []
         for room in rooms {
             let ls = lights.filter { $0.room == room }
-            if !ls.isEmpty { out.append((room, ls)) }
+            if !ls.isEmpty { out.append(LightGroup(room: room, lights: ls, isRoom: true)) }
         }
         let loose = lights.filter { $0.room.isEmpty || !rooms.contains($0.room) }
-        if !loose.isEmpty { out.append((rooms.isEmpty ? "Lights" : "Other lights", loose)) }
+        if !loose.isEmpty { out.append(LightGroup(room: rooms.isEmpty ? "Lights" : "Other lights", lights: loose, isRoom: false)) }
         return out
     }
 
     func light(_ id: String) -> Light? { lights.first { $0.id == id } }
+}
+
+struct LightGroup: Identifiable {
+    let room: String
+    let lights: [Light]
+    let isRoom: Bool
+    var id: String { room }
+    var anyOn: Bool { lights.contains { $0.on } }
 }
 
 struct HouseSettings: Codable {

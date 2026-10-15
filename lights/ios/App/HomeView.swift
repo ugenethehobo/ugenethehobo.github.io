@@ -25,8 +25,8 @@ struct HomeView: View {
                             emptyState(s)
                         } else {
                             allButtons(s)
-                            ForEach(s.groups, id: \.room) { group in
-                                roomSection(group.room, group.lights, isRoom: s.rooms.contains(group.room))
+                            ForEach(s.groups) { group in
+                                roomSection(group.room, group.lights, isRoom: group.isRoom)
                             }
                         }
                         if let next = s.nextSchedule {
@@ -217,7 +217,7 @@ struct Banner: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(12)
             .background(color.opacity(0.15), in: RoundedRectangle(cornerRadius: 12))
-            .foregroundStyle(color == .red ? .red : .primary)
+            .foregroundStyle(color == .red ? Color.red : Color.primary)
     }
 }
 

@@ -19,7 +19,8 @@ struct AllLightsIntent: AppIntent {
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
         try await Lights.power(on)
-        return .result(dialog: on ? "Lights on" : "Lights off")
+        let text = on ? "Lights on" : "Lights off"
+        return .result(dialog: "\(text)")
     }
 }
 
@@ -42,7 +43,8 @@ struct RoomLightsIntent: AppIntent {
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
         try await Lights.power(on, room: room)
-        return .result(dialog: "\(room) \(on ? "on" : "off")")
+        let state = on ? "on" : "off"
+        return .result(dialog: "\(room) \(state)")
     }
 }
 
@@ -76,7 +78,8 @@ struct ChiefsColorsIntent: AppIntent {
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
         try await Lights.call("/api/chiefs/mode", ["on": on])
-        return .result(dialog: on ? "Go Chiefs!" : "Lights back to normal")
+        let text = on ? "Go Chiefs!" : "Lights back to normal"
+        return .result(dialog: "\(text)")
     }
 }
 

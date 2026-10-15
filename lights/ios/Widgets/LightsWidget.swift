@@ -78,10 +78,10 @@ struct LightsWidgetView: View {
     private func rooms(_ s: HomeState) -> some View {
         let groups = Array(s.groups.prefix(4))
         return VStack(spacing: 6) {
-            ForEach(groups, id: \.room) { g in
-                let on = g.lights.contains { $0.on }
-                let isRoom = s.rooms.contains(g.room)
-                Button(intent: isRoom ? RoomLightsIntent(room: g.room, on: !on) : RoomLightsIntent(room: "", on: !on)) {
+            ForEach(groups) { g in
+                let on = g.anyOn
+                let isRoom = g.isRoom
+                Button(intent: RoomLightsIntent(room: g.room, on: !on)) {
                     HStack {
                         Text(g.room)
                             .font(.caption.weight(.medium))

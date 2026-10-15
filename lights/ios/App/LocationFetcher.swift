@@ -1,23 +1,27 @@
 import CoreLocation
 
-/// Gets the phone's location once (for sunrise and sunset times).
-@MainActor
+/// Gets the phone's location once (for sunrise and sunset times). Create and
+/// use it on the main thread; Core Location calls back on the same thread.
 final class LocationFetcher: NSObject, CLLocationManagerDelegate {
-    private let manager = CLLocationManager()
+    private var manager: CLLocationManager?
     private var continuation: CheckedContinuation<CLLocation, Error>?
 
     func fetch() async throws -> CLLocation {
-        manager.delegate = self
-        manager.desiredAccuracy = kCLLocationAccuracyKilometer
-        return try await withCheckedThrowingContinuation { c in
-            continuation = c
-            switch manager.authorizationStatus {
-            case .notDetermined:
-                manager.requestWhenInUseAuthorization()
-            case .denied, .restricted:
-                finish(.failure(LightsError(message: "Location is off for Lights. Turn it on in Settings → Privacy → Location Services.")))
-            default:
-                manager.requestLocation()
+        try await withCheckedThrowingContinuation { c in
+            DispatchQueue.main.async {
+                self.continuation = c
+                let m = CLLocationManager()
+                m.delegate = self
+                m.desiredAccuracy = kCLLocationAccuracyKilometer
+                self.manager = m
+                switch m.authorizationStatus {
+                case .notDetermined:
+                    m.requestWhenInUseAuthorization()
+                case .denied, .restricted:
+                    self.finish(.failure(LightsError(message: "Location is off for Lights. Turn it on in Settings → Privacy & Security → Location Services.")))
+                default:
+                    m.requestLocation()
+                }
             }
         }
     }
@@ -27,23 +31,20 @@ final class LocationFetcher: NSObject, CLLocationManagerDelegate {
         continuation = nil
     }
 
-    nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
-        Task { @MainActor in
-            guard self.continuation != nil else { return }
-            switch manager.authorizationStatus {
-            case .authorizedWhenInUse, .authorizedAlways: manager.requestLocation()
-            case .denied, .restricted: self.finish(.failure(LightsError(message: "Location permission was declined.")))
-            default: break
-            }
+    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        guard continuation != nil else { return }
+        switch manager.authorizationStatus {
+        case .authorizedWhenInUse, .authorizedAlways: manager.requestLocation()
+        case .denied, .restricted: finish(.failure(LightsError(message: "Location permission was declined.")))
+        default: break
         }
     }
 
-    nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-        guard let loc = locations.last else { return }
-        Task { @MainActor in self.finish(.success(loc)) }
+    func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        if let loc = locations.last { finish(.success(loc)) }
     }
 
-    nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
-        Task { @MainActor in self.finish(.failure(LightsError(message: "Couldn’t get your location: \(error.localizedDescription)"))) }
+    func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        finish(.failure(LightsError(message: "Couldn’t get your location: \(error.localizedDescription)")))
     }
 }

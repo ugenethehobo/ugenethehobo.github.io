@@ -138,7 +138,7 @@ struct ScheduleEditor: View {
                         }
                     }
                 }
-                Section("Do") {
+                Section {
                     Picker("Turn", selection: $schedule.action.power) {
                         Text("On").tag("on")
                         Text("Off").tag("off")
@@ -169,6 +169,8 @@ struct ScheduleEditor: View {
                     Stepper(value: $schedule.action.fade, in: 0...60) {
                         Text(schedule.action.fade == 0 ? "No fade" : "Fade over \(schedule.action.fade) min")
                     }
+                } header: {
+                    Text("Do")
                 } footer: {
                     Text(schedule.action.power == "on" ? "A fade starts dim and brightens slowly, like a sunrise alarm." : "A fade dims slowly, then turns off.")
                 }
