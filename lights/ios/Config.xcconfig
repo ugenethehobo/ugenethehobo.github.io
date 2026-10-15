@@ -1,0 +1,3 @@
+// Change this to something unique to you, e.g. com.yourname
+// (letters, numbers, dots and dashes only). Apple rejects ids someone else used.
+BUNDLE_PREFIX = com.example.change-me

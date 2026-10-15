@@ -1,0 +1,29 @@
+# Checks that the Lights iPhone app compiles (no signing; you sign it on your
+# own Mac when you install it).
+name: Lights iPhone app
+on:
+  push:
+    paths: ['lights/ios/**', '.github/workflows/home-lights-ios.yml']
+  workflow_dispatch:
+concurrency:
+  group: home-lights-ios-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Build
+        working-directory: lights/ios
+        run: |
+          xcodegen
+          xcodebuild -version
+          set -o pipefail
+          if ! xcodebuild -project HomeLights.xcodeproj -scheme HomeLights -sdk iphonesimulator \
+              -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build 2>&1 | tee build.log | grep -E "error:|warning:|BUILD" ; then
+            echo "----- ERRORS -----"; grep -n "error:" build.log | sort -u | head -60
+            exit 1
+          fi
+          grep -q "BUILD SUCCEEDED" build.log
