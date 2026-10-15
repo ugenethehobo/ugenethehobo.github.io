@@ -1,0 +1,20 @@
+{
+  // Cloudflare Workers config. Deployed by Cloudflare's GitHub integration
+  // (Workers Builds) with `npx wrangler deploy`. The dashboard Worker name
+  // must match "name" below.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "home-lights",
+  "main": "worker/index.js",
+  "compatibility_date": "2026-09-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": "public",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*"]
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "HOME", "class_name": "Home" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Home"] }],
+  "observability": { "enabled": true }
+}

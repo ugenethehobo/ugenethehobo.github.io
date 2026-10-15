@@ -1,0 +1,10 @@
+{
+  "name": "Hue Hub",
+  "version": "1.0.0",
+  "new_install_prompt_erase": true,
+  "builds": [
+    { "chipFamily": "ESP32", "parts": [{ "path": "hue-hub-esp32.bin", "offset": 0 }] },
+    { "chipFamily": "ESP32-S3", "parts": [{ "path": "hue-hub-esp32s3.bin", "offset": 0 }] },
+    { "chipFamily": "ESP32-C3", "parts": [{ "path": "hue-hub-esp32c3.bin", "offset": 0 }] }
+  ]
+}

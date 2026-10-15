@@ -1,0 +1,69 @@
+# Builds the Hue Hub firmware for ESP32 boards and saves the ready-to-flash
+# files in lights/public/firmware, where the web installer picks them up.
+name: Hue Hub firmware
+on:
+  push:
+    paths: ['lights/firmware/**', '.github/workflows/hue-hub-firmware.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: hue-hub-firmware-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - chip: esp32
+            fqbn: esp32:esp32:esp32:PartitionScheme=huge_app
+          - chip: esp32s3
+            fqbn: esp32:esp32:esp32s3:PartitionScheme=huge_app
+          - chip: esp32c3
+            fqbn: esp32:esp32:esp32c3:PartitionScheme=huge_app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: arduino/setup-arduino-cli@v2
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.arduino15
+            ~/Arduino/libraries
+          key: arduino-esp32-3.3.12-libs-1
+      - name: Install the ESP32 core and libraries
+        run: |
+          arduino-cli config init --overwrite
+          arduino-cli config add board_manager.additional_urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32@3.3.12
+          arduino-cli lib install "NimBLE-Arduino@2.5.0" "WebSockets@2.7.2" "ArduinoJson@7.4.3" "WiFiManager@2.0.17"
+      - name: Compile
+        run: |
+          arduino-cli compile --fqbn "${{ matrix.fqbn }}" --warnings default --export-binaries --output-dir out lights/firmware/hue-hub
+          ls -la out
+          cp out/hue-hub.ino.merged.bin hue-hub-${{ matrix.chip }}.bin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hue-hub-${{ matrix.chip }}
+          path: hue-hub-${{ matrix.chip }}.bin
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: built
+          merge-multiple: true
+      - name: Save the firmware for the web installer
+        run: |
+          cp built/*.bin lights/public/firmware/
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add lights/public/firmware
+          if git diff --cached --quiet; then echo "No change"; exit 0; fi
+          git commit -m "Build Hue Hub firmware (${GITHUB_SHA::7})"
+          git pull --rebase origin "${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
