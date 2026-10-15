@@ -48,11 +48,19 @@ jobs:
             exit 1
           fi
           ls -la out
-          cp out/hue-hub.ino.merged.bin hue-hub-${{ matrix.chip }}.bin
+          # Separate pieces (not one full-flash image), so updating the hub
+          # keeps its Wi-Fi settings and paired lights.
+          c=${{ matrix.chip }}
+          mkdir -p fw
+          cp out/hue-hub.ino.bootloader.bin fw/hue-hub-$c-bootloader.bin
+          cp out/hue-hub.ino.partitions.bin fw/hue-hub-$c-partitions.bin
+          cp out/hue-hub.ino.bin fw/hue-hub-$c-app.bin
+          cp ~/.arduino15/packages/esp32/hardware/esp32/3.3.12/tools/partitions/boot_app0.bin fw/boot_app0.bin
+          ls -la fw
       - uses: actions/upload-artifact@v4
         with:
           name: hue-hub-${{ matrix.chip }}
-          path: hue-hub-${{ matrix.chip }}.bin
+          path: fw/*.bin
   publish:
     needs: build
     runs-on: ubuntu-latest
@@ -64,6 +72,7 @@ jobs:
           merge-multiple: true
       - name: Save the firmware for the web installer
         run: |
+          rm -f lights/public/firmware/*.bin
           cp built/*.bin lights/public/firmware/
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

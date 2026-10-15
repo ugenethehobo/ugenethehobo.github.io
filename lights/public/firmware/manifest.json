@@ -3,8 +3,32 @@
   "version": "1.0.0",
   "new_install_prompt_erase": true,
   "builds": [
-    { "chipFamily": "ESP32", "parts": [{ "path": "hue-hub-esp32.bin", "offset": 0 }] },
-    { "chipFamily": "ESP32-S3", "parts": [{ "path": "hue-hub-esp32s3.bin", "offset": 0 }] },
-    { "chipFamily": "ESP32-C3", "parts": [{ "path": "hue-hub-esp32c3.bin", "offset": 0 }] }
+    {
+      "chipFamily": "ESP32",
+      "parts": [
+        { "path": "hue-hub-esp32-bootloader.bin", "offset": 4096 },
+        { "path": "hue-hub-esp32-partitions.bin", "offset": 32768 },
+        { "path": "boot_app0.bin", "offset": 57344 },
+        { "path": "hue-hub-esp32-app.bin", "offset": 65536 }
+      ]
+    },
+    {
+      "chipFamily": "ESP32-S3",
+      "parts": [
+        { "path": "hue-hub-esp32s3-bootloader.bin", "offset": 0 },
+        { "path": "hue-hub-esp32s3-partitions.bin", "offset": 32768 },
+        { "path": "boot_app0.bin", "offset": 57344 },
+        { "path": "hue-hub-esp32s3-app.bin", "offset": 65536 }
+      ]
+    },
+    {
+      "chipFamily": "ESP32-C3",
+      "parts": [
+        { "path": "hue-hub-esp32c3-bootloader.bin", "offset": 0 },
+        { "path": "hue-hub-esp32c3-partitions.bin", "offset": 32768 },
+        { "path": "boot_app0.bin", "offset": 57344 },
+        { "path": "hue-hub-esp32c3-app.bin", "offset": 65536 }
+      ]
+    }
   ]
 }
