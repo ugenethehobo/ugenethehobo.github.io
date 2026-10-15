@@ -24,7 +24,17 @@ for d in s['drives']['previous']:
         if 'penalty' in p: q['penalty'] = {k: v for k, v in p['penalty'].items() if k in ('status', 'type', 'team', 'yards')}
         out.append(q)
     print('DRIVE', d['id'], d['team']['id'], len(d['plays']))
-print('FIXTURE_BEGIN')
-for q in out:
-    print('P ' + json.dumps(q, separators=(',', ':')))
-print('FIXTURE_END')
+import os
+os.makedirs('lights/test/fixtures', exist_ok=True)
+home = next(x for x in c['competitors'] if x['homeAway'] == 'home')
+away = next(x for x in c['competitors'] if x['homeAway'] == 'away')
+fixture = {
+    'event': done[-1],
+    'home': {'id': home['id'], 'abbr': home['team']['abbreviation'], 'color': home['team'].get('color'), 'score': home.get('score')},
+    'away': {'id': away['id'], 'abbr': away['team']['abbreviation'], 'color': away['team'].get('color'), 'score': away.get('score')},
+    'status': c['status'],
+    'plays': out,
+}
+with open('lights/test/fixtures/kc-game.json', 'w') as f:
+    json.dump(fixture, f, separators=(',', ':'))
+print('wrote', len(out), 'plays')
