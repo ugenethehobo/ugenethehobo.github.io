@@ -237,6 +237,7 @@ struct ChiefsSettings: Codable, Hashable {
     var postgameMin: Int
     var delaySec: Int
     var pollSec: Int
+    var showLength: String?
     var events: [String: Bool]
 }
 

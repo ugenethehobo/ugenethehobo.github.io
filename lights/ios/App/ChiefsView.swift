@@ -156,10 +156,15 @@ struct ChiefsView: View {
                             .accessibilityLabel("Test \(e.label)")
                         }
                     }
+                    Picker("Show length", selection: Binding(get: { c.settings.showLength ?? "normal" }, set: { model.setChiefs(["showLength": $0]) })) {
+                        Text("Short").tag("short")
+                        Text("Normal").tag("normal")
+                        Text("Long").tag("long")
+                    }
                 } header: {
                     Text("Light shows")
                 } footer: {
-                    Text("Tap ▶︎ to see a show right now on the game lights.")
+                    Text("Each play has its own pattern, about 5–10 seconds long (the win show about 25). Tap ▶︎ to see one now on the game lights.")
                 }
             } else {
                 ProgressView()

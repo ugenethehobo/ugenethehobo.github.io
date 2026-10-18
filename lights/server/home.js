@@ -7,7 +7,7 @@
 // the server only says "do this" and goes back to sleep.
 
 import { ctToHex, hexToXy, xyToHex } from './color.js';
-import { buildEffect, DEFAULT_EVENTS, effectLength, EVENTS } from './effects.js';
+import { buildEffect, DEFAULT_EVENTS, effectLength, EVENTS, SHOW_LENGTHS } from './effects.js';
 import { classifyPlay, describe, ESPN, findGame, parseSummary, pickEvent, SCORE_EVENTS, scoreboardReport, scoreKind } from './game.js';
 import { cleanEntry, nextRun, runsBetween, sunToday } from './schedule.js';
 import { isValidTimeZone } from './time.js';
@@ -32,6 +32,7 @@ const DEFAULT_CHIEFS = {
   postgameMin: 20,
   delaySec: 0, // how far your TV runs behind the live game
   pollSec: 8,
+  showLength: 'normal', // short | normal | long
   events: { ...DEFAULT_EVENTS },
 };
 
@@ -627,6 +628,7 @@ export class Home {
       secondary: us?.alt && us.id !== '12' ? us.alt : KC.secondary,
       opp: this.game.event?.opp?.color || '#ffffff',
       bri: this.config.chiefs.bri,
+      scale: SHOW_LENGTHS[this.config.chiefs.showLength] || 1,
     };
   }
 
@@ -644,6 +646,7 @@ export class Home {
     if (patch.postgameMin != null) c.postgameMin = clamp(Math.round(patch.postgameMin), 0, 240);
     if (patch.afterGame === 'restore' || patch.afterGame === 'stay') c.afterGame = patch.afterGame;
     if (patch.delaySec != null) c.delaySec = clamp(Math.round(patch.delaySec), 0, 180);
+    if (SHOW_LENGTHS[patch.showLength]) c.showLength = patch.showLength;
     if (patch.pollSec != null) c.pollSec = clamp(Math.round(patch.pollSec), 5, 60);
     if (patch.events && typeof patch.events === 'object') {
       for (const k of Object.keys(EVENTS)) if (patch.events[k] !== undefined) c.events[k] = !!patch.events[k];
