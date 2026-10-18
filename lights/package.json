@@ -1,6 +1,6 @@
 {
   "name": "home-lights",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "Control Philips Hue Bluetooth lights from your phone through Cloudflare, with schedules and a Chiefs gameday mode. A small ESP32 hub at home talks Bluetooth to the lights.",
   "type": "module",
