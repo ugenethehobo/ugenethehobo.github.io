@@ -35,6 +35,26 @@ export function findGame(scoreboard, teamId) {
   return null;
 }
 
+// The live score, status and latest play for one game from the scoreboard
+// (a separate, lighter ESPN feed than the play-by-play), or null.
+export function scoreboardReport(scoreboard, eventId) {
+  const e = (scoreboard?.events || []).find((x) => String(x.id) === String(eventId));
+  const c = e?.competitions?.[0];
+  if (!c) return null;
+  const st = c.status || e.status || {};
+  const scores = {};
+  for (const x of c.competitors || []) scores[String(x.team?.id ?? x.id)] = Number(x.score) || 0;
+  return {
+    state: st.type?.state || 'pre',
+    completed: !!st.type?.completed,
+    detail: st.type?.shortDetail || st.type?.detail || '',
+    period: st.period || 0,
+    clock: st.displayClock || '',
+    scores,
+    lastPlay: c.situation?.lastPlay || null,
+  };
+}
+
 // Score, status and every play so far, in order, from a game summary.
 export function parseSummary(summary) {
   const comp = summary?.header?.competitions?.[0] || {};
@@ -77,11 +97,12 @@ export function classifyPlay(play, { teamId, home, prev }) {
   const ours = home ? after.home - prev.home : after.away - prev.away;
   const theirs = home ? after.away - prev.away : after.home - prev.home;
 
+  const conversion = /two-point|2pt|conversion/i.test(typeText + ' ' + text) && !/touchdown/i.test(typeText);
   if (ours >= 6) events.push('td');
   else if (ours === 3) events.push('fg');
-  else if (ours === 2) events.push('safety');
+  else if (ours === 2 && !conversion) events.push('safety');
   if (theirs >= 6) events.push('oppTd');
-  else if (theirs >= 2) events.push('oppFg');
+  else if (theirs >= 2 && !(theirs === 2 && conversion)) events.push('oppFg');
 
   if (play.isTurnover) events.push(offense === us ? 'giveaway' : 'takeaway');
   if (!noPlay && (typeId === '7' || /\bsacked\b/i.test(text)) && offense && offense !== us) events.push('sack');
@@ -91,6 +112,24 @@ export function classifyPlay(play, { teamId, home, prev }) {
 
   const penaltyOn = text.match(/PENALTY on ([A-Z]{2,3})\b/)?.[1] || null;
   return { events, after, penaltyOn };
+}
+
+// Events that come from the score changing (any feed with a score can
+// report these), as opposed to ones only play-by-play can tell.
+export const SCORE_EVENTS = new Set(['td', 'fg', 'safety', 'oppTd', 'oppFg']);
+
+// What a score change means. `side` is 'us' or 'opp'. A 2-point jump soon
+// after a touchdown is the conversion, not a safety.
+export function scoreKind(side, delta, recentTd) {
+  if (side === 'us') {
+    if (delta >= 6) return 'td';
+    if (delta === 3) return 'fg';
+    if (delta === 2 && !recentTd) return 'safety';
+    return null;
+  }
+  if (delta >= 6) return 'oppTd';
+  if (delta >= 2 && !(delta === 2 && recentTd)) return 'oppFg';
+  return null;
 }
 
 export function pickEvent(events, enabled) {

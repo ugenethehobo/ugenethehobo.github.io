@@ -8,7 +8,7 @@
 
 import { ctToHex, hexToXy, xyToHex } from './color.js';
 import { buildEffect, DEFAULT_EVENTS, effectLength, EVENTS } from './effects.js';
-import { classifyPlay, describe, ESPN, findGame, parseSummary, pickEvent } from './game.js';
+import { classifyPlay, describe, ESPN, findGame, parseSummary, pickEvent, SCORE_EVENTS, scoreboardReport, scoreKind } from './game.js';
 import { cleanEntry, nextRun, runsBetween, sunToday } from './schedule.js';
 import { isValidTimeZone } from './time.js';
 
@@ -83,7 +83,8 @@ const lightState = (l) => ({ on: l.on, bri: l.bri, ...(l.mode === 'ct' && l.ct ?
 export class Home {
   // persist(key, value) stores data. hubs: { send(id, msg) -> bool,
   // online() -> [ids], close(id, code, reason) }. fetchJson(url) -> object.
-  constructor({ saved, game, scan, persist = () => {}, hubs, fetchJson, now = () => Date.now() } = {}) {
+  constructor({ saved, game, scan, persist = () => {}, hubs, fetchJson, now = () => Date.now(), gameSources = [] } = {}) {
+    this.extraGameSources = gameSources;
     this.config = newConfig(saved);
     this.game = newGame(game);
     this.scanState = scan || { until: 0, found: [] };
@@ -198,6 +199,7 @@ export class Home {
       lastPlay: g.lastPlay,
       recent: g.recent,
       espnLagSec: g.lastPlay?.wall ? Math.round((g.lastPlay.seenAt - g.lastPlay.wall) / 1000) : null,
+      sources: Object.entries(g.sources || {}).map(([name, h]) => ({ name, ok: !!h.ok, at: h.at || null, error: h.error || null, firsts: h.firsts || 0 })),
       restoreAt: g.restoreAt,
       nextCheck: g.nextCheck,
       error: g.error,
@@ -746,7 +748,7 @@ export class Home {
         const ev = findGame(await this.fetchJson(`${ESPN}/scoreboard`), c.teamId);
         g.error = null;
         if (ev && ev.id !== g.doneId) {
-          if (g.event?.id !== ev.id) Object.assign(g, { seq: null, prev: { home: 0, away: 0 }, score: null, lastPlay: null, recent: [] });
+          if (g.event?.id !== ev.id) Object.assign(g, { seq: null, prev: { home: 0, away: 0 }, score: null, lastPlay: null, recent: [], seen: null, seenPlays: [], scoreKeys: [], lastTd: {}, sources: {}, lagMs: null });
           g.event = ev;
           g.detail = ev.detail;
           if (g.phase === 'idle' || g.phase === 'final') g.phase = 'scheduled';
@@ -789,53 +791,172 @@ export class Home {
     if (changed) this.saveGame();
   }
 
+  // The feeds that report a game. Each returns { state, completed, detail,
+  // period, clock, scores: { teamId: points }, plays?: [...], lastPlay? }.
+  // Extra feeds (e.g. an API you have a key for) can be passed in as
+  // `gameSources` with the same shape.
+  #gameSources(ev) {
+    return [
+      { name: 'ESPN play-by-play', fetch: async () => parseSummary(await this.fetchJson(`${ESPN}/summary?event=${ev.id}`)) },
+      {
+        name: 'ESPN scoreboard',
+        fetch: async () => {
+          const r = scoreboardReport(await this.fetchJson(`${ESPN}/scoreboard`), ev.id);
+          if (!r) throw new Error('game not on the scoreboard');
+          return r;
+        },
+      },
+      ...this.extraGameSources.map((src) => ({ name: src.name, fetch: () => src.fetch(ev) })),
+    ];
+  }
+
+  // Asks every feed at once. Whichever reports a play or a score first
+  // triggers the lights; the same event from a slower feed is ignored.
   async #pollGame(now) {
     const c = this.config.chiefs;
     const g = this.game;
     const ev = g.event;
-    let s;
-    try {
-      s = parseSummary(await this.fetchJson(`${ESPN}/summary?event=${ev.id}`));
-      g.error = null;
-    } catch (e) {
-      g.error = `Couldn’t read the game: ${e.message}`;
+    const sources = this.#gameSources(ev);
+    const results = await Promise.allSettled(sources.map((src) => src.fetch()));
+    g.sources ||= {};
+    const reports = [];
+    results.forEach((r, i) => {
+      const name = sources[i].name;
+      const h = (g.sources[name] ||= { firsts: 0 });
+      h.at = now;
+      h.ok = r.status === 'fulfilled';
+      h.error = h.ok ? null : String(r.reason?.message || r.reason).slice(0, 120);
+      if (h.ok) reports.push({ name, ...r.value });
+    });
+    if (!reports.length) {
+      g.error = `Couldn’t read the game from any feed (${Object.entries(g.sources).map(([n, h]) => `${n}: ${h.error}`).join('; ')})`;
       g.nextPoll = now + 30 * 1000;
       return;
     }
-    g.detail = s.detail || g.detail;
-    g.score = { us: s.scores[ev.us.id] ?? 0, opp: s.scores[ev.opp.id] ?? 0, period: s.period, clock: s.clock };
+    g.error = null;
 
-    const last = s.plays[s.plays.length - 1];
-    if (g.seq == null) {
-      // First look at this game: start from here, don't replay old plays.
-      g.seq = last ? Number(last.sequenceNumber) : 0;
-      g.prev = last ? { home: +last.homeScore || 0, away: +last.awayScore || 0 } : { home: 0, away: 0 };
-    } else {
-      for (const p of s.plays) {
-        if (Number(p.sequenceNumber) <= g.seq) continue;
-        g.seq = Number(p.sequenceNumber);
-        const r = classifyPlay(p, { teamId: ev.us.id, home: ev.home, prev: g.prev });
-        g.prev = r.after;
-        const kind = pickEvent(r.events, c.events);
-        if (!kind) continue;
-        const wall = Date.parse(p.wallclock) || now;
-        const at = Math.max(now, wall + c.delaySec * 1000);
-        // Catching up after a gap: show it in the feed, but don't flash
-        // lights for plays the TV showed more than a minute ago.
-        if (wall + c.delaySec * 1000 >= now - MIN) g.queue.push({ kind, at });
-        this.#feed({ kind, label: describe(kind, { penaltyOn: r.penaltyOn, us: ev.us, opp: ev.opp }), text: String(p.text || '').slice(0, 200), at: wall });
+    const side = (teamId) => (String(teamId) === String(ev.us.id) ? 'us' : 'opp');
+    const scoresOf = (r) => (r.scores && ev.us.id in r.scores ? { us: r.scores[ev.us.id] ?? 0, opp: r.scores[ev.opp.id] ?? 0 } : null);
+    const lagMs = g.lagMs ?? 0;
+    g.seenPlays ||= [];
+    g.scoreKeys ||= [];
+    g.lastTd ||= {};
+    const firstLook = !g.seen;
+
+    // One place every event goes through, so each fires once.
+    const fire = (kind, key, { wall, source, text = '', penaltyOn = null }) => {
+      const keys = SCORE_EVENTS.has(kind) || kind === 'conversion' ? g.scoreKeys : g.seenPlays;
+      if (keys.includes(key)) return false;
+      keys.push(key);
+      if (keys.length > 300) keys.splice(0, keys.length - 300);
+      if (firstLook || kind === 'conversion' || !c.events[kind]) return true;
+      g.sources[source].firsts += 1;
+      const at = Math.max(now, wall + c.delaySec * 1000);
+      // Catching up after a gap: show it in the feed, but don't flash
+      // lights for plays the TV showed more than a minute ago.
+      if (wall + c.delaySec * 1000 >= now - MIN) g.queue.push({ kind, at });
+      this.#feed({ kind, label: describe(kind, { penaltyOn, us: ev.us, opp: ev.opp }), text: String(text).slice(0, 200), at: wall, source });
+      return true;
+    };
+
+    // A team's score went from `from` to `to`, seen first by `source`.
+    const scored = (who, from, to, info) => {
+      const recentTd = g.lastTd[who] && info.wall - g.lastTd[who] < 4 * MIN;
+      const kind = scoreKind(who, to - from, recentTd) || (to - from === 2 && recentTd ? 'conversion' : null);
+      if (kind === 'td' || kind === 'oppTd') g.lastTd[who] = info.wall;
+      if (kind) fire(kind, `${who}:${from}`, info);
+      return !!kind;
+    };
+
+    // 1. Scores, from every feed that has one. Keyed by the score a team had
+    //    before, so "13 → 19" and later "13 → 20" are the same touchdown.
+    g.seen ||= null;
+    for (const r of reports) {
+      const sc = scoresOf(r);
+      if (!sc) continue;
+      if (!g.seen) {
+        g.seen = { ...sc };
+        continue;
+      }
+      for (const who of ['us', 'opp']) {
+        if (sc[who] > g.seen[who]) {
+          scored(who, g.seen[who], sc[who], { wall: now - lagMs, source: r.name, text: `${ev.us.abbr} ${sc.us} – ${sc.opp} ${ev.opp.abbr}` });
+          g.seen[who] = sc[who];
+        }
       }
     }
-    if (last) g.lastPlay = { text: String(last.text || '').slice(0, 200), wall: Date.parse(last.wallclock) || null, seenAt: now };
 
-    if (s.state === 'post' || s.completed) {
+    // 2. Plays. The play-by-play has every play; the scoreboard only the last one.
+    for (const r of reports) {
+      if (Array.isArray(r.plays)) {
+        const last = r.plays[r.plays.length - 1];
+        if (g.seq == null) {
+          // First look at this game: start from here, don't replay old plays.
+          g.seq = last ? Number(last.sequenceNumber) : 0;
+          g.prev = last ? { home: +last.homeScore || 0, away: +last.awayScore || 0 } : { home: 0, away: 0 };
+          for (const p of r.plays) g.seenPlays.push(String(p.id));
+          if (g.seenPlays.length > 300) g.seenPlays.splice(0, g.seenPlays.length - 300);
+        } else {
+          for (const p of r.plays) {
+            if (Number(p.sequenceNumber) <= g.seq) continue;
+            g.seq = Number(p.sequenceNumber);
+            const res = classifyPlay(p, { teamId: ev.us.id, home: ev.home, prev: g.prev });
+            const before = g.prev;
+            g.prev = res.after;
+            const wall = Date.parse(p.wallclock) || now - lagMs;
+            if (Date.parse(p.wallclock)) g.lagMs = Math.round(0.7 * (g.lagMs ?? now - wall) + 0.3 * (now - wall));
+            const info = { wall, source: r.name, text: p.text, penaltyOn: res.penaltyOn };
+            // A play that scored shows the scoring effect (once, whichever
+            // feed saw the score first) and nothing else.
+            const homeSide = ev.home ? 'us' : 'opp';
+            const awaySide = ev.home ? 'opp' : 'us';
+            let scoring = false;
+            if (res.after.home > before.home) scoring = scored(homeSide, before.home, res.after.home, info) || scoring;
+            if (res.after.away > before.away) scoring = scored(awaySide, before.away, res.after.away, info) || scoring;
+            for (const who of ['us', 'opp']) {
+              const now2 = who === homeSide ? res.after.home : res.after.away;
+              if (g.seen && now2 > g.seen[who]) g.seen[who] = now2;
+            }
+            if (scoring) {
+              if (!g.seenPlays.includes(String(p.id))) g.seenPlays.push(String(p.id));
+              continue;
+            }
+            const kind = pickEvent(res.events.filter((k) => !SCORE_EVENTS.has(k)), c.events);
+            if (kind) fire(kind, String(p.id), info);
+            else if (!g.seenPlays.includes(String(p.id))) g.seenPlays.push(String(p.id));
+          }
+        }
+        if (last) g.lastPlay = { text: String(last.text || '').slice(0, 200), wall: Date.parse(last.wallclock) || null, seenAt: now };
+      } else if (r.lastPlay?.id != null && g.seq != null) {
+        // The scoreboard's latest play can beat the play-by-play. Only use it
+        // for events that don't depend on who had the ball: flags and kickoffs.
+        const p = r.lastPlay;
+        const res = classifyPlay({ ...p, start: undefined, teamParticipants: undefined }, { teamId: ev.us.id, home: ev.home, prev: g.prev });
+        const kind = pickEvent(res.events.filter((k) => k === 'flag' || k === 'kickoff'), c.events);
+        if (kind) fire(kind, String(p.id), { wall: now - lagMs, source: r.name, text: p.text, penaltyOn: res.penaltyOn });
+      }
+    }
+
+    // 3. Score and status: the most up-to-date of all feeds.
+    const best = reports.reduce((a, b) => {
+      const sa = scoresOf(a), sb = scoresOf(b);
+      const ta = sa ? sa.us + sa.opp : -1, tb = sb ? sb.us + sb.opp : -1;
+      return tb > ta ? b : a;
+    });
+    const bs = scoresOf(best) || { us: 0, opp: 0 };
+    g.score = { us: Math.max(bs.us, g.seen?.us ?? 0), opp: Math.max(bs.opp, g.seen?.opp ?? 0), period: best.period, clock: best.clock };
+    g.detail = best.detail || g.detail;
+    const live = reports.some((r) => r.state === 'in');
+    const final = reports.find((r) => r.state === 'post' || r.completed);
+
+    if (final) {
       g.phase = 'final';
       g.doneId = ev.id;
       const won = g.score.us > g.score.opp;
       const kind = won ? 'win' : g.score.us < g.score.opp ? 'loss' : null;
       if (kind && c.events[kind]) {
         g.queue.push({ kind, at: now + c.delaySec * 1000 });
-        this.#feed({ kind, label: describe(kind, { us: ev.us }), text: `${ev.us.abbr} ${g.score.us} – ${g.score.opp} ${ev.opp.abbr}`, at: now });
+        this.#feed({ kind, label: describe(kind, { us: ev.us }), text: `${ev.us.abbr} ${g.score.us} – ${g.score.opp} ${ev.opp.abbr}`, at: now, source: final.name });
       }
       if (g.active && !g.manual) {
         if (c.afterGame === 'restore') g.restoreAt = now + c.delaySec * 1000 + c.postgameMin * MIN;
@@ -847,9 +968,9 @@ export class Home {
       this.save();
       return;
     }
-    g.phase = s.state === 'in' ? 'live' : g.active ? 'pregame' : 'scheduled';
-    // Play by play once it's close to kickoff (ESPN can flip to "in" late).
-    g.nextPoll = now + (s.state === 'in' || now >= ev.start - 2 * MIN ? c.pollSec * 1000 : 60 * 1000);
+    g.phase = live ? 'live' : g.active ? 'pregame' : 'scheduled';
+    // Play by play once it's close to kickoff (feeds can flip to "in" late).
+    g.nextPoll = now + (live || now >= ev.start - 2 * MIN ? c.pollSec * 1000 : 60 * 1000);
   }
 
   // Plays due effects one after another. Returns true if anything changed.

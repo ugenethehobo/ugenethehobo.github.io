@@ -40,8 +40,34 @@ struct ChiefsView: View {
                                         .foregroundStyle(.secondary)
                                         .lineLimit(3)
                                 }
+                                if let source = item.source {
+                                    Text("First seen: \(source)")
+                                        .font(.caption2)
+                                        .foregroundStyle(.tertiary)
+                                }
                             }
                         }
+                    }
+                }
+                if let feeds = c.sources, !feeds.isEmpty {
+                    Section {
+                        ForEach(feeds) { f in
+                            HStack {
+                                Circle()
+                                    .fill(f.ok ? Color.green : Color.orange)
+                                    .frame(width: 9, height: 9)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(f.name)
+                                    Text(f.ok ? "Working · first on \(f.firsts) play\(f.firsts == 1 ? "" : "s")" : (f.error ?? "Not answering"))
+                                        .font(.caption)
+                                        .foregroundStyle(f.ok ? Color.secondary : Color.orange)
+                                }
+                            }
+                        }
+                    } header: {
+                        Text("Game feeds")
+                    } footer: {
+                        Text("Every feed is checked each time. Whichever reports a play or a score first sets off the lights; the same play from a slower feed is ignored.")
                     }
                 }
                 Section {

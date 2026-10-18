@@ -88,7 +88,7 @@ A busy day (a game, a few schedules, the app open for an hour) uses roughly 5–
 
 ## Caveats
 
-- **ESPN's feed is unofficial.** It's the same public data espn.com uses, with no key. ESPN can change it; the parsing is in `server/game.js` and is tested against a recorded Chiefs game.
+- **Game feeds.** Each check reads two separate ESPN feeds at once (the play-by-play and the scoreboard) and whichever shows a play or score first sets off the lights; duplicates are ignored, and the game keeps going if one feed fails. The app's 🏈 screen shows each feed's health. Both are ESPN's public feeds (no key), so an ESPN-wide outage still stops them; another provider with an official API can be added as a third feed (`gameSources` in `server/home.js`). The parsing is in `server/game.js`, tested against a recorded Chiefs game.
 - **Plays show up when ESPN posts them**, usually 5–30 seconds after they happen. The TV delay setting covers the rest. Flags that are picked up or offset may still flash.
 - **Hub security.** The hub's connection to Cloudflare is encrypted, but the hub doesn't check the server's certificate (it can't keep a list of certificate authorities up to date). Someone on your own Wi-Fi could pretend to be the server; nobody outside your home can.
 - **One hub, one board.** If a hub dies, flash a new board, approve it, and pair the lights again.

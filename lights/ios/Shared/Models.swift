@@ -208,7 +208,17 @@ struct FeedItem: Codable, Hashable, Identifiable {
     var label: String
     var text: String
     var at: Double
+    var source: String?
     var id: String { "\(kind)-\(at)" }
+}
+
+struct GameFeed: Codable, Hashable, Identifiable {
+    var name: String
+    var ok: Bool
+    var at: Double?
+    var error: String?
+    var firsts: Int
+    var id: String { name }
 }
 
 struct GameEvent: Codable, Hashable, Identifiable {
@@ -240,6 +250,7 @@ struct Chiefs: Codable {
     var lastPlay: LastPlay?
     var recent: [FeedItem]
     var espnLagSec: Int?
+    var sources: [GameFeed]?
     var restoreAt: Double?
     var nextCheck: Double?
     var error: String?

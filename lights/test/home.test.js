@@ -289,3 +289,104 @@ test('searching for all devices marks which ones look like Hue lights', () => {
   home.pair({ id: 'aa:bb:cc:00:00:09' }, 'Sam');
   assert.equal(home.snapshot().scan.running, false, 'the hub stops searching to pair');
 });
+
+// Several feeds at once: the scoreboard and the play-by-play.
+function twoFeeds({ sb, pbp }) {
+  return {
+    scoreboard: () => sb(),
+    summary: () => pbp(),
+  };
+}
+
+function scoreboardWith({ state = 'in', kc = 0, lv = 0, lastPlay = null } = {}) {
+  const board = structuredClone(scoreboard);
+  const c = board.events[0].competitions[0];
+  c.status = { type: { state, completed: state === 'post', shortDetail: 'Live' }, period: 1, displayClock: '9:00' };
+  c.competitors[0].score = String(lv);
+  c.competitors[1].score = String(kc);
+  if (lastPlay) c.situation = { lastPlay };
+  return board;
+}
+
+test('a touchdown fires once, from whichever feed sees it first', async () => {
+  const td = fx.plays.findIndex((p) => p.type.text.includes('Touchdown') && p.awayScore === 7); // KC's first TD (KC is away)
+  let upTo = td; // play-by-play stops just before the touchdown
+  let board = scoreboardWith({ kc: 0, lv: 7 });
+  const { home, clock, sent } = setup({ now: kickoff + 20 * MIN, espn: twoFeeds({ sb: () => board, pbp: () => liveGame(upTo) }) });
+  home.setChiefs({ delaySec: 0 }, 'Sam');
+  await home.tick(); // first look
+  sent.length = 0;
+
+  // The scoreboard shows 6 points for KC before the play-by-play has the play.
+  board = scoreboardWith({ kc: 6, lv: 7 });
+  clock.now += 8000;
+  home.game.nextPoll = 0;
+  await home.tick();
+  const recent = home.snapshot().chiefs.recent;
+  assert.equal(recent[0].kind, 'td');
+  assert.equal(recent[0].source, 'ESPN scoreboard');
+  assert.equal(sent.filter((m) => m.t === 'fx').length, 1);
+
+  // Then the extra point (7) and the play-by-play catch up: no second show.
+  board = scoreboardWith({ kc: 7, lv: 7 });
+  upTo = td + 1;
+  clock.now = Math.max(clock.now + 12_000, Date.parse(fx.plays[td].wallclock) + 5000);
+  home.game.nextPoll = 0;
+  await home.tick();
+  assert.equal(home.snapshot().chiefs.recent.filter((r) => r.kind === 'td').length, 1);
+  const health = home.snapshot().chiefs.sources;
+  assert.equal(health.length, 2);
+  assert.ok(health.every((h) => h.ok));
+  assert.equal(health.find((h) => h.name === 'ESPN scoreboard').firsts, 1);
+});
+
+test('the game keeps going when one feed is down', async () => {
+  let upTo = 0;
+  const { home, clock } = setup({
+    now: kickoff - 5 * MIN,
+    espn: twoFeeds({ sb: () => { throw new Error('HTTP 503'); }, pbp: () => liveGame(upTo) }),
+  });
+  await home.tick().catch(() => {});
+  // The scoreboard is also used to find the game; give it one directly.
+  home.game.event = { id: fx.event, start: kickoff, home: false, us: { id: '12', abbr: 'KC' }, opp: { id: '13', abbr: 'LV', color: '#000000' }, name: 'KC @ LV' };
+  home.game.phase = 'scheduled';
+  home.game.nextPoll = 0;
+  clock.now = kickoff;
+  await home.tick();
+  upTo = 1;
+  clock.now = Date.parse(fx.plays[0].wallclock) + 5000;
+  home.game.nextPoll = 0;
+  await home.tick();
+  const c = home.snapshot().chiefs;
+  assert.equal(c.recent[0].kind, 'kickoff');
+  assert.equal(c.sources.find((h) => h.name === 'ESPN scoreboard').ok, false);
+  assert.match(c.sources.find((h) => h.name === 'ESPN scoreboard').error, /503/);
+});
+
+test('a flag on the scoreboard beats the play-by-play and only fires once', async () => {
+  let upTo = 2;
+  const flagPlay = fx.plays.find((p) => /PENALTY on/.test(p.text));
+  let board = scoreboardWith({});
+  const { home, clock } = setup({ now: kickoff + 5 * MIN, espn: twoFeeds({ sb: () => board, pbp: () => liveGame(upTo) }) });
+  await home.tick();
+  board = scoreboardWith({ lastPlay: { id: flagPlay.id, type: flagPlay.type, text: flagPlay.text } });
+  clock.now += 8000;
+  home.game.nextPoll = 0;
+  await home.tick();
+  assert.equal(home.snapshot().chiefs.recent[0].kind, 'flag');
+  assert.equal(home.snapshot().chiefs.recent[0].source, 'ESPN scoreboard');
+  // The play-by-play later includes the same play.
+  upTo = fx.plays.indexOf(flagPlay) + 1;
+  clock.now = Math.max(clock.now + 8000, Date.parse(flagPlay.wallclock) + 5000);
+  home.game.nextPoll = 0;
+  await home.tick();
+  assert.equal(home.snapshot().chiefs.recent.filter((r) => r.text === flagPlay.text.slice(0, 200)).length, 1);
+});
+
+test('a two-point conversion is not a safety', async () => {
+  const { scoreKind } = await import('../server/game.js');
+  assert.equal(scoreKind('us', 2, true), null);
+  assert.equal(scoreKind('us', 2, false), 'safety');
+  assert.equal(scoreKind('opp', 2, true), null);
+  assert.equal(scoreKind('us', 8, false), 'td');
+});
