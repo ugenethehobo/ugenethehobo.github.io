@@ -58,11 +58,11 @@ The hub's blue light: slow blink = connecting, double blink = waiting for approv
 
 ### 5. Move your lights over from the PC
 
-1. **Quit the Bluetooth app on your PC.** A Hue light talks to one device at a time, so while the PC is connected the hub can't reach the light.
-2. In the app tap **+ → Search for lights**. Lights appear with their signal strength.
-3. Tap **Pair**, give it a name and a room.
+1. **Turn off Bluetooth on your PC** (Settings → Bluetooth & devices), not just the app. Windows stays connected to lights it's paired with, and a light that's connected to something else doesn't show up for the hub at all.
+2. **Put each light in pairing mode.** A Hue light that's already paired with a device only accepts a new one after it's made discoverable. In the Philips Hue phone app (Bluetooth mode, no bridge needed): **Settings → Voice assistants → Amazon Alexa (or Google Home) → Make discoverable**, then close the Hue app so it lets go of the light. A factory-reset light is in pairing mode on its own (resetting gives it a new Bluetooth address).
+3. In the Lights app tap **+ → Search for lights**, then **Pair**, and give it a name and room.
 
-If pairing fails with "refused to pair": the light only accepts a new device when it's discoverable. Make it discoverable from the app that already controls it (the Hue Bluetooth app calls this making the light visible to a voice assistant), or switch it off and on at the wall and pair within a minute. Once a light is paired with the hub, you can remove it from the PC app.
+A light missing from the list (Play bars, for example, may not say they're Hue lights in every advertisement): turn on **Show all Bluetooth devices** and search again. The **What the hub is doing** list on the same screen shows each pairing step and the exact error.
 
 ### 6. Turn on Chiefs mode
 

@@ -23,7 +23,7 @@
 #include <string>
 #include <vector>
 
-#define FW_VERSION "1.0.0"
+#define FW_VERSION "1.1.0"
 
 // BOOT_PIN (the board's BOOT button) comes from the ESP32 core, per chip.
 
@@ -125,6 +125,7 @@ static std::deque<String> outbox;     // messages for the server
 
 // Scanning
 static volatile bool scanning = false;
+static volatile bool scanAll = false;  // also list devices that don't look like Hue lights
 static uint32_t scanUntil = 0;
 static std::set<std::string> seen;
 static SemaphoreHandle_t seenLock;
@@ -401,13 +402,15 @@ static bool connectLight(Light* l, uint32_t timeoutMs, String* error) {
   l->client->setConnectTimeout(timeoutMs);
   l->dropped = false;
   if (!l->client->connect(true, false, false)) {
-    if (error) *error = "The light didn't answer";
+    if (error) *error = "The light didn't answer (code " + String(l->client->getLastError()) + ")";
     freeClient(l);
     return false;
   }
-  // Hue lights only take commands over an encrypted (bonded) link.
+  // Hue lights only take commands over an encrypted (bonded) link. A light
+  // we're already bonded with re-encrypts in a moment; a new one only agrees
+  // while it's in pairing mode.
   if (!l->client->secureConnection()) {
-    if (error) *error = "The light refused to pair";
+    if (error) *error = "The light refused to pair (code " + String(l->client->getLastError()) + ")";
     freeClient(l);
     return false;
   }
@@ -563,8 +566,9 @@ static void cmdShow(JsonDocument& m) {
   show = s;
 }
 
-static void cmdScan(int sec) {
+static void cmdScan(int sec, bool all) {
   NimBLEScan* scan = NimBLEDevice::getScan();
+  scanAll = all;
   if (sec <= 0) {
     scan->stop();
     scanning = false;
@@ -576,7 +580,7 @@ static void cmdScan(int sec) {
   scan->clearResults();
   scanning = scan->start(sec * 1000, false, true);
   scanUntil = millis() + sec * 1000;
-  logLine(scanning ? "Searching for Hue lights" : "Couldn't start searching");
+  logLine(scanning ? (all ? "Searching for all Bluetooth devices" : "Searching for Hue lights") : "Couldn't start searching");
 }
 
 static void cmdPair(const String& idIn, int addrType) {
@@ -584,6 +588,7 @@ static void cmdPair(const String& idIn, int addrType) {
   id.toLowerCase();
   NimBLEDevice::getScan()->stop();
   scanning = false;
+  vTaskDelay(pdMS_TO_TICKS(250));  // let the radio finish scanning before connecting
   JsonDocument d;
   d["t"] = "paired";
   d["id"] = id;
@@ -599,13 +604,23 @@ static void cmdPair(const String& idIn, int addrType) {
     freeClient(l);
   }
   String error;
-  bool ok = connectLight(l, 8000, &error);
-  if (!ok && error == "The light refused to pair") {
+  bool ok = false;
+  for (int attempt = 1; attempt <= 3 && !ok; attempt++) {
+    logLine("Pairing " + id + ": connecting (try " + String(attempt) + " of 3)");
+    ok = connectLight(l, 10000, &error);
+    if (!ok) logLine("Pairing " + id + ": " + error);
+    if (!ok && error.startsWith("The light refused")) break;  // retrying won't help
+    if (!ok) vTaskDelay(pdMS_TO_TICKS(1000));
+  }
+  if (!ok && error.startsWith("The light refused")) {
     NimBLEDevice::deleteBond(NimBLEAddress(std::string(id.c_str()), l->addrType));
+    error += ". It isn't in pairing mode: in the Philips Hue app use Settings → Voice assistants → Amazon Alexa → Make discoverable, then close the Hue app and pair here within a few minutes.";
+  } else if (!ok) {
+    error += ". It may still be connected to another device: turn off Bluetooth on your PC and close the Hue app on your phone, then try again.";
   }
   if (!ok) {
     d["ok"] = false;
-    d["error"] = error + ". Make sure the Hue app on your PC is closed, the light is near the hub, and the light is in pairing mode (see the app).";
+    d["error"] = error;
     if (isNew) delete l;
     emit(d);
     return;
@@ -683,7 +698,7 @@ static void handle(char* text) {
   String t = m["t"] | "";
   if (t == "set") cmdSet(m);
   else if (t == "fx") cmdShow(m);
-  else if (t == "scan") cmdScan(m["sec"] | 30);
+  else if (t == "scan") cmdScan(m["sec"] | 30, m["all"] | false);
   else if (t == "pair") cmdPair(m["id"] | "", m["addrType"].isNull() ? -1 : (int)m["addrType"]);
   else if (t == "forget") cmdForget(m["id"] | "");
   else if (t == "rename") cmdRename(m["id"] | "", m["name"] | "");
@@ -748,23 +763,36 @@ static void lightTask(void*) {
   }
 }
 
+static bool looksLikeHue(const NimBLEAdvertisedDevice* dev, const std::string& name) {
+  if (dev->isAdvertisingService(HUE_ADV)) return true;
+  for (uint8_t i = 0; i < dev->getServiceDataCount(); i++)
+    if (dev->getServiceDataUUID(i) == HUE_ADV) return true;
+  if (dev->isAdvertisingService(LIGHT_SVC)) return true;
+  String n = String(name.c_str());
+  n.toLowerCase();
+  return n.indexOf("hue") >= 0 || n.indexOf("philips") >= 0 || n.indexOf("signify") >= 0;
+}
+
 class ScanCallbacks : public NimBLEScanCallbacks {
+  // Every advertisement arrives here (duplicates on), because a light may
+  // only say it's a Hue light in some of its packets.
   void onResult(const NimBLEAdvertisedDevice* dev) override {
-    bool hue = dev->isAdvertisingService(HUE_ADV);
-    for (uint8_t i = 0; !hue && i < dev->getServiceDataCount(); i++) hue = dev->getServiceDataUUID(i) == HUE_ADV;
     std::string name = dev->getName();
-    if (!hue && name.rfind("Hue", 0) != 0) return;
+    bool hue = looksLikeHue(dev, name);
+    if (!hue && !(scanAll && (name.length() || dev->isConnectable()))) return;
     std::string addr = dev->getAddress().toString();
+    std::string key = addr + (hue ? "#hue" : "");
     xSemaphoreTake(seenLock, portMAX_DELAY);
-    bool fresh = seen.insert(addr).second;
+    bool fresh = seen.insert(key).second;
     xSemaphoreGive(seenLock);
     if (!fresh) return;
     JsonDocument d;
     d["t"] = "found";
     d["id"] = addr.c_str();
-    d["name"] = name.length() ? name.c_str() : "Hue light";
+    d["name"] = name.length() ? name.c_str() : (hue ? "Hue light" : "Unnamed device");
     d["rssi"] = dev->getRSSI();
     d["addrType"] = dev->getAddress().getType();
+    d["hue"] = hue;
     emit(d);
   }
   void onScanEnd(const NimBLEScanResults&, int) override { scanning = false; }
@@ -939,7 +967,7 @@ void setup() {
   NimBLEDevice::setSecurityAuth(true, false, true);  // bond, no PIN, secure connections
   NimBLEDevice::setSecurityIOCap(BLE_HS_IO_NO_INPUT_OUTPUT);
   NimBLEScan* scan = NimBLEDevice::getScan();
-  scan->setScanCallbacks(&scanCallbacks, false);
+  scan->setScanCallbacks(&scanCallbacks, true);
   scan->setActiveScan(true);
   scan->setInterval(100);
   scan->setWindow(80);

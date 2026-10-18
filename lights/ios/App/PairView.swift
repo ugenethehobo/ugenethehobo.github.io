@@ -7,17 +7,20 @@ struct PairView: View {
     @State private var naming: FoundLight?
     @State private var name = ""
     @State private var room = ""
+    @State private var showAll = false
 
     var body: some View {
         NavigationStack {
             let scan = model.state?.scan
-            let found = (scan?.found ?? []).sorted { $0.rssi > $1.rssi }
+            let all = (scan?.found ?? []).sorted { $0.rssi > $1.rssi }
+            let found = all.filter(\.isHue)
+            let others = all.filter { !$0.isHue }
             List {
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
-                        Label("Close the Hue Bluetooth app on your PC first. A Hue light talks to only one device at a time.", systemImage: "1.circle")
-                        Label("Lights already paired to your PC must be made discoverable: in the PC app use “Make discoverable” / “Voice assistant” pairing, or turn the light off and on at the wall and search within a minute.", systemImage: "2.circle")
-                        Label("Keep the light within about 10 m of the hub.", systemImage: "3.circle")
+                        Label("Turn off Bluetooth on your PC (not just the app). Windows stays connected to paired lights, and a connected light is invisible to the hub.", systemImage: "1.circle")
+                        Label("Put the light in pairing mode. A light that’s already paired somewhere only accepts a new device after you make it discoverable: in the Philips Hue phone app, Settings → Voice assistants → Amazon Alexa (or Google Home) → Make discoverable. Then close the Hue app. A factory-reset light is in pairing mode on its own.", systemImage: "2.circle")
+                        Label("Keep the light within about 10 m of the hub, then search and tap Pair.", systemImage: "3.circle")
                     }
                     .font(.footnote)
                     .padding(.vertical, 4)
@@ -31,8 +34,9 @@ struct PairView: View {
                             Button("Stop") { model.fire("/api/scan/stop") }
                         }
                     } else {
+                        Toggle("Show all Bluetooth devices", isOn: $showAll)
                         Button {
-                            model.fire("/api/scan")
+                            model.fire("/api/scan", ["all": showAll])
                         } label: {
                             Label(found.isEmpty ? "Search for lights" : "Search again", systemImage: "magnifyingglass")
                         }
@@ -41,12 +45,38 @@ struct PairView: View {
                 } footer: {
                     if !(model.state?.hubs.contains { $0.online && !$0.pending } ?? false) {
                         Text("No hub is online. Set one up in Settings.")
+                    } else {
+                        Text("A light missing from the list? Turn on “Show all Bluetooth devices”: some lights (like Play bars) don’t say they’re Hue lights until you connect.")
                     }
                 }
                 if !found.isEmpty {
-                    Section("Found") {
+                    Section("Hue lights") {
                         ForEach(found) { f in
                             row(f)
+                        }
+                    }
+                }
+                if !others.isEmpty {
+                    Section {
+                        ForEach(others) { f in
+                            row(f)
+                        }
+                    } header: {
+                        Text("Other Bluetooth devices")
+                    } footer: {
+                        Text("Pair only works with Hue lights. The hub checks when it connects.")
+                    }
+                }
+                if let log = model.state?.hubLog, !log.isEmpty {
+                    Section("What the hub is doing") {
+                        ForEach(log.prefix(8)) { e in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(e.text)
+                                    .font(.caption)
+                                Text(Date(ms: e.at).formatted(date: .omitted, time: .standard))
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                     }
                 }

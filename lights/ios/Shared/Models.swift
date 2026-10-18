@@ -16,6 +16,7 @@ struct HomeState: Codable {
     var nextSchedule: NextSchedule?
     var chiefs: Chiefs
     var log: [LogEntry]
+    var hubLog: [HubLogEntry]?
 
     var onCount: Int { lights.filter { $0.on && $0.reachable }.count }
 
@@ -117,6 +118,16 @@ struct FoundLight: Codable, Identifiable, Hashable {
     var status: String
     var error: String?
     var known: Bool
+    var hue: Bool?
+
+    var isHue: Bool { hue ?? true }
+}
+
+struct HubLogEntry: Codable, Hashable, Identifiable {
+    var at: Double
+    var hub: String
+    var text: String
+    var id: String { "\(at)-\(text)" }
 }
 
 struct Schedule: Codable, Identifiable, Hashable {

@@ -92,7 +92,6 @@ export class Home {
     this.fetchJson = fetchJson;
     this.now = now;
     this.schedFrom = this.config.schedCheckedAt || 0;
-    this.hubLog = [];
   }
 
   // ---------- saving ----------
@@ -164,13 +163,13 @@ export class Home {
       scan: {
         running: now < this.scanState.until,
         until: this.scanState.until,
-        found: this.scanState.found.map((f) => ({ ...f, known: !!c.lights[f.id] && !c.lights[f.id].unpaired })),
+        found: this.scanState.found.map((f) => ({ ...f, hue: f.hue !== false, known: !!c.lights[f.id] && !c.lights[f.id].unpaired })),
       },
       schedules: c.schedules,
       nextSchedule: next ? { id: next.entry.id, name: next.entry.name, at: next.at } : null,
       chiefs: this.chiefsView(now),
       log: c.log.slice(0, 25),
-      hubLog: this.hubLog.slice(0, 20),
+      hubLog: (this.scanState.log || []).slice(0, 20),
     };
   }
 
@@ -341,13 +340,13 @@ export class Home {
 
   // ---------- finding and pairing lights ----------
 
-  startScan({ hub } = {}, by) {
+  startScan({ hub, all = false } = {}, by) {
     const online = this.hubs.online().filter((id) => this.config.hubs[id]);
     const targets = hub ? online.filter((h) => h === hub) : online;
     if (!targets.length) throw err(Object.keys(this.config.hubs).length ? 'No hub is online' : 'Set up a hub first');
     const sec = 30;
-    for (const h of targets) this.hubs.send(h, { t: 'scan', sec });
-    this.scanState = { until: this.now() + sec * 1000, found: [] };
+    for (const h of targets) this.hubs.send(h, { t: 'scan', sec, all: !!all });
+    this.scanState = { ...this.scanState, until: this.now() + sec * 1000, found: [] };
     this.saveScan();
     this.log(by, 'Searched for lights');
   }
@@ -363,6 +362,7 @@ export class Home {
     const hub = f?.hub || this.config.lights[id]?.hub;
     if (!hub) throw err('Search for lights first');
     if (!this.hubs.send(hub, { t: 'pair', id, addrType: f?.addrType ?? null })) throw err('That hub is offline');
+    this.scanState.until = Math.min(this.scanState.until, this.now()); // the hub stops searching to pair
     if (f) {
       f.status = 'pairing';
       f.error = null;
@@ -520,10 +520,18 @@ export class Home {
         const found = this.scanState.found;
         const f = found.find((x) => x.id === id);
         const rssi = Number(msg.rssi) || -100;
+        const hue = msg.hue !== false; // older hubs only report Hue lights
         if (f) {
           if (rssi > f.rssi) Object.assign(f, { rssi, hub, addrType: msg.addrType ?? f.addrType });
-        } else if (found.length < 40) {
-          found.push({ id, name: text(msg.name) || 'Hue light', rssi, hub, addrType: msg.addrType ?? null, status: 'found', error: null });
+          if (hue && !f.hue) Object.assign(f, { hue: true, name: text(msg.name) || f.name });
+        } else {
+          const entry = { id, name: text(msg.name) || 'Hue light', rssi, hub, addrType: msg.addrType ?? null, hue, status: 'found', error: null };
+          if (found.length < 40) found.push(entry);
+          else if (hue) {
+            // Full: make room for a Hue light by dropping the weakest other device.
+            const others = found.filter((x) => !x.hue).sort((a, b) => a.rssi - b.rssi);
+            if (others.length) found.splice(found.indexOf(others[0]), 1, entry);
+          }
         }
         this.saveScan();
         break;
@@ -546,7 +554,7 @@ export class Home {
           this.save();
         } else if (f) {
           f.status = 'failed';
-          f.error = text(msg.error, 160) || 'Pairing failed';
+          f.error = text(msg.error, 400) || 'Pairing failed';
         }
         this.saveScan();
         break;
@@ -555,10 +563,13 @@ export class Home {
         this.scanState.until = Math.min(this.scanState.until, this.now());
         this.saveScan();
         break;
-      case 'log':
-        this.hubLog.unshift({ at: this.now(), hub, text: text(msg.text, 200) });
-        this.hubLog.length = Math.min(this.hubLog.length, 30);
+      case 'log': {
+        const log = (this.scanState.log ||= []);
+        log.unshift({ at: this.now(), hub, text: text(msg.text, 300) });
+        log.length = Math.min(log.length, 30);
+        this.saveScan();
         break;
+      }
     }
   }
 

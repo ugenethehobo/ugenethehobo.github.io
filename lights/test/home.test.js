@@ -84,7 +84,7 @@ test('an offline hub is reported instead of failing silently', () => {
 test('scanning and pairing a light', () => {
   const { home, sent } = setup();
   home.startScan({}, 'Sam');
-  assert.deepEqual(sent.pop(), { id: 'hub-a', t: 'scan', sec: 30 });
+  assert.deepEqual(sent.pop(), { id: 'hub-a', t: 'scan', sec: 30, all: false });
   home.onHubMessage('hub-a', { t: 'found', id: 'aa:bb:cc:00:00:03', name: 'Hue color lamp', rssi: -60, addrType: 1 });
   assert.equal(home.snapshot().scan.found.length, 1);
   home.pair({ id: 'aa:bb:cc:00:00:03', name: 'Desk', room: 'Office' }, 'Sam');
@@ -272,4 +272,20 @@ test('test buttons play a show right away', () => {
   const show = sent.find((m) => m.t === 'fx');
   assert.equal(show.ids.length, 2);
   assert.ok(show.steps.some((f) => f.b), 'alternating colours');
+});
+
+test('searching for all devices marks which ones look like Hue lights', () => {
+  const { home, sent } = setup();
+  home.startScan({ all: true }, 'Sam');
+  assert.deepEqual(sent.pop(), { id: 'hub-a', t: 'scan', sec: 30, all: true });
+  home.onHubMessage('hub-a', { t: 'found', id: 'aa:bb:cc:00:00:09', name: 'Unnamed device', rssi: -70, addrType: 1, hue: false });
+  home.onHubMessage('hub-a', { t: 'found', id: 'aa:bb:cc:00:00:09', name: 'Hue play', rssi: -72, addrType: 1, hue: true });
+  home.onHubMessage('hub-a', { t: 'log', text: 'Pairing aa:bb:cc:00:00:09: connecting' });
+  const s = home.snapshot();
+  assert.equal(s.scan.found.length, 1);
+  assert.equal(s.scan.found[0].hue, true);
+  assert.equal(s.scan.found[0].name, 'Hue play');
+  assert.equal(s.hubLog[0].text, 'Pairing aa:bb:cc:00:00:09: connecting');
+  home.pair({ id: 'aa:bb:cc:00:00:09' }, 'Sam');
+  assert.equal(home.snapshot().scan.running, false, 'the hub stops searching to pair');
 });
