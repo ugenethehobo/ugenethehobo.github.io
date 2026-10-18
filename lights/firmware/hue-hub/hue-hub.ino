@@ -23,7 +23,7 @@
 #include <string>
 #include <vector>
 
-#define FW_VERSION "1.1.0"
+#define FW_VERSION "1.1.1"
 
 // BOOT_PIN (the board's BOOT button) comes from the ESP32 core, per chip.
 
@@ -385,6 +385,18 @@ static bool makeRoom(Light* except) {
   return true;
 }
 
+// What a Bluetooth error code means, in words.
+static String explain(int code) {
+  if (code == BLE_HS_ETIMEOUT) return "no answer";
+  if (code == BLE_HS_ERR_SM_PEER_BASE + BLE_SM_ERR_UNSPECIFIED) return "it said no";
+  if (code > BLE_HS_ERR_SM_PEER_BASE && code < BLE_HS_ERR_SM_PEER_BASE + 0x100) return "it refused pairing";
+  if (code > BLE_HS_ERR_HCI_BASE && code < BLE_HS_ERR_HCI_BASE + 0x100) return "the connection dropped";
+  return "error";
+}
+
+// Set while pairing: what the device turned out to be, e.g. "a Hue light (LCT024)".
+static String lastIdentity;
+
 static bool connectLight(Light* l, uint32_t timeoutMs, String* error) {
   if (connectedCount() >= POOL && !makeRoom(l)) {
     if (error) *error = "Too many lights on this hub";
@@ -402,15 +414,31 @@ static bool connectLight(Light* l, uint32_t timeoutMs, String* error) {
   l->client->setConnectTimeout(timeoutMs);
   l->dropped = false;
   if (!l->client->connect(true, false, false)) {
-    if (error) *error = "The light didn't answer (code " + String(l->client->getLastError()) + ")";
+    int code = l->client->getLastError();
+    if (error) *error = "The light didn't answer (" + explain(code) + ", code " + String(code) + ")";
     freeClient(l);
     return false;
+  }
+  // Look before asking to pair: most devices let anyone list their services
+  // and read their model, which tells us whether this is a Hue light at all.
+  lastIdentity = "";
+  if (l->client->getService(LIGHT_SVC)) {
+    lastIdentity = "a Hue light";
+    if (auto* svc = l->client->getService(DEVINFO_SVC)) {
+      if (auto* c = svc->getCharacteristic(CHR_MODEL)) {
+        if (c->canRead()) {
+          NimBLEAttValue v = c->readValue();
+          if (v.size()) lastIdentity += " (model " + String(std::string(reinterpret_cast<const char*>(v.data()), v.size()).c_str()) + ")";
+        }
+      }
+    }
   }
   // Hue lights only take commands over an encrypted (bonded) link. A light
   // we're already bonded with re-encrypts in a moment; a new one only agrees
   // while it's in pairing mode.
   if (!l->client->secureConnection()) {
-    if (error) *error = "The light refused to pair (code " + String(l->client->getLastError()) + ")";
+    int code = l->client->getLastError();
+    if (error) *error = (lastIdentity.length() ? "This is " + lastIdentity + ", but it" : "The light") + " refused to pair (" + explain(code) + ", code " + String(code) + ")";
     freeClient(l);
     return false;
   }
@@ -609,12 +637,12 @@ static void cmdPair(const String& idIn, int addrType) {
     logLine("Pairing " + id + ": connecting (try " + String(attempt) + " of 3)");
     ok = connectLight(l, 10000, &error);
     if (!ok) logLine("Pairing " + id + ": " + error);
-    if (!ok && error.startsWith("The light refused")) break;  // retrying won't help
+    if (!ok && (error.indexOf("refused to pair") >= 0)) break;  // retrying won't help
     if (!ok) vTaskDelay(pdMS_TO_TICKS(1000));
   }
-  if (!ok && error.startsWith("The light refused")) {
+  if (!ok && (error.indexOf("refused to pair") >= 0)) {
     NimBLEDevice::deleteBond(NimBLEAddress(std::string(id.c_str()), l->addrType));
-    error += ". It isn't in pairing mode: in the Philips Hue app use Settings → Voice assistants → Amazon Alexa → Make discoverable, then close the Hue app and pair here within a few minutes.";
+    error += ". It isn't in pairing mode. A light that was set up on a Hue Bridge needs a factory reset first (for example with a Hue dimmer switch: hold On and Off next to the light for 10 seconds). A light paired with a phone can be made discoverable in the Philips Hue app: Settings → Voice assistants → Amazon Alexa → Make discoverable.";
   } else if (!ok) {
     error += ". It may still be connected to another device: turn off Bluetooth on your PC and close the Hue app on your phone, then try again.";
   }
